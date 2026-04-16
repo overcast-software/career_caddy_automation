@@ -26,15 +26,23 @@ email = [
 ollama = [
     "pydanticai-ollama",
 ]
+a2a = [
+    "fasta2a",
+    "uvicorn[standard]>=0.24.0",
+]
 all = [
-    "career-caddy-automation[browser,email,ollama]",
+    "career-caddy-automation[browser,email,ollama,a2a]",
 ]
 
 [project.scripts]
 caddy-url      = "src.pipelines.url_to_caddy:run"
 caddy-email    = "src.pipelines.email_to_caddy:run"
 caddy-classify = "scripts.tag_emails:run"
-caddy-web      = "src.pipelines.web_ui:main"
+caddy-web          = "src.pipelines.web_ui:main"
+caddy-orchestrator = "src.agents.a2a_orchestrator:run"
+caddy-gateway      = "mcp_servers.agents_gateway:main"
+caddy-process      = "scripts.process_tagged:run"
+caddy-login        = "scripts.manual_login:run"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src", "lib", "mcp_servers", "scripts"]
