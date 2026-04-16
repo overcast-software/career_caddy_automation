@@ -1,0 +1,10 @@
+.env
+.envrc
+secrets.yml
+__pycache__/
+*.pyc
+.camoufox/
+.venv/
+dist/
+*.egg-info/
+.logfire/

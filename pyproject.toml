@@ -1,0 +1,44 @@
+[project]
+name = "career-caddy-automation"
+version = "0.1.0"
+description = "Standalone automation toolkit for Career Caddy — scrape job postings, classify emails, and manage applications via the Career Caddy API or MCP endpoint."
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+    "httpx>=0.25.0",
+    "pydantic>=2.0.0",
+    "pydantic-ai>=0.0.14",
+    "python-dotenv>=1.0.0",
+    "rich<14",
+    "logfire",
+]
+
+[project.optional-dependencies]
+browser = [
+    "playwright>=1.40.0",
+    "camoufox>=0.4.11",
+    "beautifulsoup4",
+    "html2text",
+]
+email = [
+    "fastmcp>=3.0.0,<4",
+]
+ollama = [
+    "pydanticai-ollama",
+]
+all = [
+    "career-caddy-automation[browser,email,ollama]",
+]
+
+[project.scripts]
+caddy-url      = "src.pipelines.url_to_caddy:run"
+caddy-email    = "src.pipelines.email_to_caddy:run"
+caddy-classify = "scripts.tag_emails:run"
+caddy-web      = "src.pipelines.web_ui:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src", "lib", "mcp_servers", "scripts"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
