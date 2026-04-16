@@ -11,6 +11,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "rich<14",
     "logfire",
+    "pyyaml",
 ]
 
 [project.optional-dependencies]
@@ -43,6 +44,8 @@ caddy-orchestrator = "src.agents.a2a_orchestrator:run"
 caddy-gateway      = "mcp_servers.agents_gateway:main"
 caddy-process      = "scripts.process_tagged:run"
 caddy-login        = "scripts.manual_login:run"
+caddy-poller       = "scripts.hold_poller:run"
+caddy-discover     = "scripts.discover_sites:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src", "lib", "mcp_servers", "scripts"]
