@@ -27,6 +27,8 @@ Approach B — Agent-as-A2A-Server
 
 from __future__ import annotations
 
+from lib.observability import configure_logfire
+
 import argparse
 import asyncio
 import logging
@@ -161,14 +163,24 @@ async def _run_a2a_server(app, host: str, port: int, name: str):
     await server.serve()
 
 
-async def run_a2a_mode(host: str):
-    """
-    Start all three agents as A2A servers concurrently (for local testing).
+_A2A_AGENTS: dict[str, dict] = {
+    "email":   {"port": 3010, "name": "email-agent",         "description": "Searches and analyses job emails via notmuch."},
+    "caddy":   {"port": 3011, "name": "career-caddy-agent",  "description": "Manages job posts and companies in the Career Caddy API."},
+    "browser": {"port": 3012, "name": "browser-agent",       "description": "Scrapes job post pages via Camoufox browser automation."},
+}
 
-    In production each agent should be its own process:
-        uvicorn mcp_servers.agents_gateway:email_a2a_app --port 3010
-        uvicorn mcp_servers.agents_gateway:caddy_a2a_app --port 3011
-        uvicorn mcp_servers.agents_gateway:browser_a2a_app --port 3012
+
+def _build_a2a_app(agent_key: str):
+    email_agent, caddy_agent, browser_agent = _load_agents()
+    agent = {"email": email_agent, "caddy": caddy_agent, "browser": browser_agent}[agent_key]
+    meta = _A2A_AGENTS[agent_key]
+    return agent.to_a2a(name=meta["name"], description=meta["description"]), meta["port"], meta["name"]
+
+
+async def run_a2a_mode(host: str, only: str | None = None):
+    """
+    Start A2A servers. With --only <email|caddy|browser>, runs just that one.
+    Otherwise runs all three concurrently in one process.
     """
     try:
         import fasta2a  # noqa: F401
@@ -179,31 +191,13 @@ async def run_a2a_mode(host: str):
         )
         sys.exit(1)
 
-    email_agent, caddy_agent, browser_agent = _load_agents()
-
-    email_app = email_agent.to_a2a(
-        name="email-agent",
-        description="Searches and analyses job emails via notmuch.",
-    )
-    caddy_app = caddy_agent.to_a2a(
-        name="career-caddy-agent",
-        description="Manages job posts and companies in the Career Caddy API.",
-    )
-    browser_app = browser_agent.to_a2a(
-        name="browser-agent",
-        description="Scrapes job post pages via Camoufox browser automation.",
-    )
-
-    logger.info("A2A endpoints (local testing):")
-    logger.info(f"  email-agent    → http://{host}:3010")
-    logger.info(f"  career-caddy   → http://{host}:3011")
-    logger.info(f"  browser-agent  → http://{host}:3012")
-
-    await asyncio.gather(
-        _run_a2a_server(email_app, host, 3010, "email-agent"),
-        _run_a2a_server(caddy_app, host, 3011, "career-caddy-agent"),
-        _run_a2a_server(browser_app, host, 3012, "browser-agent"),
-    )
+    keys = [only] if only else list(_A2A_AGENTS.keys())
+    tasks = []
+    for key in keys:
+        app, port, name = _build_a2a_app(key)
+        logger.info(f"  {name}  → http://{host}:{port}")
+        tasks.append(_run_a2a_server(app, host, port, name))
+    await asyncio.gather(*tasks)
 
 
 # ===========================================================================
@@ -223,10 +217,17 @@ def main():
     parser.add_argument(
         "--port", type=int, default=DEFAULT_PORT, help="Port (MCP mode only).",
     )
+    parser.add_argument(
+        "--only", choices=["email", "caddy", "browser"], default=None,
+        help="A2A mode only: start a single sub-agent instead of all three.",
+    )
     args = parser.parse_args()
 
+    service = f"caddy-gateway-{args.only}" if args.only else ("caddy-gateway-a2a" if args.mode == "a2a" else "caddy-gateway-mcp")
+    configure_logfire(service)
+
     if args.mode == "a2a":
-        asyncio.run(run_a2a_mode(args.host))
+        asyncio.run(run_a2a_mode(args.host, only=args.only))
     else:
         server = make_agent_mcp_server()
 
