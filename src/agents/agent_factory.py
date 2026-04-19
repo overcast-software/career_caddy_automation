@@ -20,7 +20,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import RequestUsage
 from pydantic_ai._utils import PeekableAsyncStream
 
-from src.agents.history import sanitize_orphaned_tool_calls, truncate_message_history
+from src.agents.history import sanitize_orphaned_tool_calls
 from src.client.toolset import CareerCaddyToolset, CareerCaddyDeps
 
 
@@ -198,6 +198,24 @@ def get_model(role: str | None = None) -> str:
     return os.environ.get("CADDY_DEFAULT_MODEL", _DEFAULT_MODEL)
 
 
+def resolve_model(spec: str):
+    """Convert a model spec string to whatever pydantic-ai needs.
+
+    - "ollama:<name>"         → OpenAIChatModel routed to Ollama's /v1 endpoint
+                                (tool-calling works via the OpenAI-compat API)
+    - any other provider spec ("openai:...", "anthropic:...", etc.) passes
+      through as a plain string that pydantic-ai resolves itself.
+    """
+    if spec.startswith("ollama:"):
+        if not _HAS_OLLAMA:
+            raise RuntimeError(
+                "ollama:* model requested but pydanticai_ollama is not installed "
+                "(uv sync --extra ollama)"
+            )
+        return OpenAIChatModel(spec.split(":", 1)[1], provider=_ollama_openai_provider)
+    return spec
+
+
 def get_model_name(model) -> str:
     """Extract a string model name from a model object or string."""
     if isinstance(model, str):
@@ -299,7 +317,7 @@ def register_defaults() -> None:
         return
     _defaults_registered = True
 
-    _common_history = [truncate_message_history, sanitize_orphaned_tool_calls]
+    _common_history = [sanitize_orphaned_tool_calls]
 
     register_agent("caddy", AgentConfig(
         role="caddy",

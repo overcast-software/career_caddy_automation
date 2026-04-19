@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+import os
+from lib.observability import configure_logfire
+configure_logfire("email_mcp_server")
 import logfire
 import email
 from pathlib import Path
@@ -7,16 +10,55 @@ from datetime import datetime, timedelta
 from pydantic import BaseModel, Field
 from fastmcp import FastMCP, Context
 import json
+import re
 import subprocess
 import logging
 import math
 import html2text
 from bs4 import BeautifulSoup
 
-logfire.configure(
-    service_name="email_mcp_server",
-    console=False,
+
+# ---------------------------------------------------------------------------
+# Markdown noise stripping — shrinks LLM input for classification.
+# Marketing emails (LinkedIn, ZipRecruiter) are ~90% tracking URLs, invisible
+# padding, and boilerplate footer. "minimal" removes obvious junk; "classify"
+# additionally flattens markdown links/images since the classifier only needs
+# the prose, not URLs.
+# ---------------------------------------------------------------------------
+
+_ZW_CHARS = re.compile(r"[\u034f\u200b\u200c\u200d\u00ad\u2060\ufeff]")
+_TRIPLE_BLANK = re.compile(r"\n\s*\n\s*\n+")
+_TRACKING_IMG = re.compile(r"!\[\]\([^)]*\.(?:gif|png)[^)]*\)")
+_IMG = re.compile(r"!\[[^\]]*\]\([^)]*\)", re.DOTALL)
+_MD_LINK = re.compile(r"\[([^\]]+)\]\(\s*[^)]*\)", re.DOTALL)
+_BARE_URL = re.compile(r"https?://\S+")
+_HRULE = re.compile(r"(?m)^[-|*_\s]{3,}$")
+_PIPE_ONLY = re.compile(r"(?m)^[\s|]+$")
+_FOOTER = re.compile(
+    r"(?mi)^.*(unsubscribe|manage (your )?preferences|"
+    r"this (email|message) was sent|view (this|it) (in|online)|"
+    r"update your preferences|\xa9\s*20\d\d|all rights reserved|"
+    r"privacy policy|terms of (use|service)).*$"
 )
+
+
+def _clean_markdown(md: str, classify: bool = False) -> str:
+    """Strip noise from HTML-derived markdown.
+
+    classify=True is lossy — drops URLs/images/footer boilerplate. Don't use
+    when downstream needs links (e.g. url extraction).
+    """
+    md = _ZW_CHARS.sub("", md)
+    md = _TRACKING_IMG.sub("", md)
+    if classify:
+        md = _IMG.sub("", md)
+        md = _MD_LINK.sub(r"\1", md)
+        md = _BARE_URL.sub("", md)
+        md = _FOOTER.sub("", md)
+        md = _HRULE.sub("", md)
+        md = _PIPE_ONLY.sub("", md)
+    md = _TRIPLE_BLANK.sub("\n\n", md)
+    return md.strip()
 
 logger = logging.getLogger(__name__)
 # Configuration
@@ -112,7 +154,7 @@ class TagEmailArgs(BaseModel):
     email_id: str = Field(description="The email ID to tag (from search results)")
     tags: List[str] = Field(
         min_length=1,
-        description="List of tags to add/remove (e.g., ['evaluated', 'job-posting'])",
+        description="List of tags to add/remove (e.g., ['evaluated', 'job_post'])",
     )
 
 
@@ -377,7 +419,7 @@ def _format_search_results(
 
 
 def _parse_email_with_content(
-    email_id: str, max_content_length: int = 4000
+    email_id: str, max_content_length: int = 4000, classify: bool = False
 ) -> Optional[Dict[str, Any]]:
     """Helper function to parse an email and convert all content to markdown.
 
@@ -425,6 +467,7 @@ def _parse_email_with_content(
         markdown_content = parsed_email.content.plain_text
         content_source = "plain_text"
 
+    markdown_content = _clean_markdown(markdown_content, classify=classify)
     original_length = len(markdown_content)
 
     # Log content sizes
@@ -517,9 +560,18 @@ async def list_emails(query: str = "*", limit: int = 50, days_back: float = 7) -
 
 @server.tool()
 async def read_email(
-    ctx: Context, email_id: str, max_content_length: int = 4000
+    ctx: Context,
+    email_id: str,
+    max_content_length: int = 4000,
+    classify: bool = False,
 ) -> str:
     """Read the full content of a specific email by email ID.
+
+    Set `classify=True` when the caller only needs to decide what KIND of
+    email this is (job posting vs not) — it strips URLs, images, and
+    marketing footer boilerplate so the LLM sees a fraction of the tokens.
+    Leave `classify=False` (default) when downstream code needs the URLs
+    (e.g. extracting job links).
 
     **Purpose**: Retrieve complete email content including body text and headers.
     HTML emails are automatically converted to clean markdown format for better
@@ -539,7 +591,7 @@ async def read_email(
     **Workflow example**:
     1. search_unevaluated_emails() → get email_id
     2. read_email(email_id) → analyze content
-    3. tag_email(email_id, ["evaluated", "job-posting"]) → categorize
+    3. tag_email(email_id, ["evaluated", "job_post"]) → categorize
 
     Args:
         email_id: The email ID from list_emails/search_email (e.g., "abc123@example.com")
@@ -554,7 +606,7 @@ async def read_email(
     """
     try:
         parsed_data = _parse_email_with_content(
-            email_id, max_content_length=max_content_length
+            email_id, max_content_length=max_content_length, classify=classify
         )
         if not parsed_data:
             return f"Error: Could not parse email with ID {email_id}"
@@ -591,14 +643,14 @@ async def tag_email(ctx: Context, email_id: str, tags: List[str]) -> str:
 
     **When to use**:
     - Mark emails as processed: ["evaluated"]
-    - Categorize content: ["job-posting", "newsletter", "receipt"]
+    - Categorize content: ["job_post", "newsletter", "receipt"]
     - Set priority: ["important", "urgent", "low-priority"]
     - Track workflow: ["todo", "waiting-response", "archived"]
     - Flag for follow-up: ["needs-reply", "action-required"]
 
     **Common tag patterns**:
     - "evaluated" = email has been reviewed/processed
-    - "job-posting" = contains job opportunity
+    - "job_post" = contains job opportunity
     - "important" = high priority
     - "todo" = requires action
     - "archived" = processed and filed away
@@ -606,8 +658,8 @@ async def tag_email(ctx: Context, email_id: str, tags: List[str]) -> str:
     **Workflow example**:
     1. read_email(email_id) → analyze content
     2. Determine category/status
-    3. tag_email(email_id, ["evaluated", "job-posting"]) → mark it
-    4. Later: search_by_tag(["job-posting"]) → find all job emails
+    3. tag_email(email_id, ["evaluated", "job_post"]) → mark it
+    4. Later: search_by_tag(["job_post"]) → find all job emails
 
     Args:
         email_id: The email ID to tag (from list_emails/search_email)
@@ -726,7 +778,7 @@ async def search_by_tag(
     This is the primary tool for retrieving previously categorized emails.
 
     **When to use**:
-    - Find all job postings: ["job-posting"]
+    - Find all job postings: ["job_post"]
     - Find urgent unread emails: ["important", "unread"]
     - Find emails needing action: ["todo", "evaluated"]
     - Review processed emails: ["evaluated", "archived"]
@@ -737,7 +789,7 @@ async def search_by_tag(
     - To find emails with ANY tag, call this multiple times
 
     **Workflow examples**:
-    1. Find job opportunities: search_by_tag(["job-posting", "evaluated"])
+    1. Find job opportunities: search_by_tag(["job_post", "evaluated"])
     2. Find pending tasks: search_by_tag(["todo"])
     3. Review important emails: search_by_tag(["important"])
 
@@ -778,7 +830,7 @@ async def search_without_tag(
     **When to use**:
     - Find unprocessed emails: search_without_tag(["evaluated"])
     - Find emails not marked as spam: search_without_tag(["spam", "deleted"])
-    - Find emails without category: search_without_tag(["job-posting", "newsletter"])
+    - Find emails without category: search_without_tag(["job_post", "newsletter"])
     - Find emails needing review: search_without_tag(["archived"])
 
     **Logic**: Emails must NOT have ANY of the specified tags (NOT operation)
