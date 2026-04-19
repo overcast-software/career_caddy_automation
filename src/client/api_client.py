@@ -228,6 +228,26 @@ async def get_companies(api: ApiClient, id: Optional[int] = None) -> str:
     return await api.get("/api/v1/companies/")
 
 
+async def create_job_post_minimal(
+    api: ApiClient,
+    title: str,
+    link: str,
+    description: Optional[str] = None,
+) -> str:
+    """Create a job post with no company relationship.
+
+    Backend is idempotent on `link` — POSTing the same link twice returns
+    the existing row (200) instead of a duplicate error. Use this for
+    email-discovered postings where we don't have enough info to attach a
+    company. Users can attach one later via the UI.
+    """
+    attrs: dict = {"title": title, "link": link}
+    if description:
+        attrs["description"] = description
+    payload = {"data": {"type": "job-post", "attributes": attrs}}
+    return await api.post("/api/v1/job-posts/", payload)
+
+
 async def find_job_post_by_link(api: ApiClient, link: str) -> str:
     """Find a job post by its original posting URL."""
     return await api.get("/api/v1/job-posts/", params={"filter[link]": link})
