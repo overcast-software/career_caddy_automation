@@ -19,6 +19,9 @@ Usage:
 
 from __future__ import annotations
 
+from lib.observability import configure_logfire
+configure_logfire("caddy-orchestrator")
+
 import asyncio
 import logging
 import uuid
@@ -28,7 +31,7 @@ import httpx
 from pydantic_ai import Agent
 
 from src.agents.agent_factory import get_model, register_defaults
-from src.agents.history import sanitize_orphaned_tool_calls, truncate_message_history
+from src.agents.history import sanitize_orphaned_tool_calls
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)-8s %(name)s  %(message)s"
@@ -247,7 +250,7 @@ a2a_orchestrator = Agent(
     get_model("caddy"),
     name="a2a_orchestrator",
     system_prompt=SYSTEM_PROMPT,
-    history_processors=[truncate_message_history, sanitize_orphaned_tool_calls],
+    history_processors=[sanitize_orphaned_tool_calls],
 )
 
 

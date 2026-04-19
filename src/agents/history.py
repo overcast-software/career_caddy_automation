@@ -1,6 +1,5 @@
 """Message history utilities for pydantic-ai agents."""
 
-import json
 from dataclasses import replace as dc_replace
 
 from pydantic_ai.messages import (
@@ -11,82 +10,22 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 
-_DEFAULT_MAX_TOKENS = 20_000
-_CHARS_PER_TOKEN = 3
-_MAX_TOOL_RESPONSE_CHARS = 300_000
-
-
-def _estimate_tokens(msg: ModelMessage) -> int:
-    """Rough token estimate for a message based on JSON character count."""
-    try:
-        text = json.dumps(msg, default=str)
-    except Exception:
-        text = str(msg)
-    return max(1, len(text) // _CHARS_PER_TOKEN)
-
-
-def _cap_tool_responses(messages: list[ModelMessage]) -> list[ModelMessage]:
-    """Truncate oversized tool responses to prevent context blowout."""
-    result = []
-    for msg in messages:
-        if isinstance(msg, ModelRequest):
-            new_parts = []
-            for part in msg.parts:
-                if (
-                    isinstance(part, ToolReturnPart)
-                    and isinstance(part.content, str)
-                    and len(part.content) > _MAX_TOOL_RESPONSE_CHARS
-                ):
-                    truncated = part.content[:_MAX_TOOL_RESPONSE_CHARS] + "\n... [truncated]"
-                    part = dc_replace(part, content=truncated)
-                new_parts.append(part)
-            if new_parts != list(msg.parts):
-                msg = dc_replace(msg, parts=new_parts)
-        result.append(msg)
-    return result
-
-
-def truncate_message_history(
-    messages: list[ModelMessage],
-    max_tokens: int = _DEFAULT_MAX_TOKENS,
-) -> list[ModelMessage]:
-    """Drop old messages when the history exceeds the token budget."""
-    total = sum(_estimate_tokens(m) for m in messages)
-    if total <= max_tokens:
-        return messages
-
-    kept: list[ModelMessage] = []
-    budget = max_tokens
-    for msg in reversed(messages):
-        cost = _estimate_tokens(msg)
-        if cost > budget and kept:
-            break
-        kept.append(msg)
-        budget -= cost
-
-    kept.reverse()
-
-    while kept:
-        first = kept[0]
-        if isinstance(first, ModelRequest):
-            has_only_returns = all(isinstance(p, ToolReturnPart) for p in first.parts)
-            has_any_return = any(isinstance(p, ToolReturnPart) for p in first.parts)
-            if has_only_returns:
-                kept.pop(0)
-                continue
-            if has_any_return:
-                stripped = [p for p in first.parts if not isinstance(p, ToolReturnPart)]
-                kept[0] = dc_replace(first, parts=stripped)
-        elif isinstance(first, ModelResponse):
-            kept.pop(0)
-            continue
-        break
-
-    return kept if kept else messages
-
 
 def sanitize_orphaned_tool_calls(messages: list[ModelMessage]) -> list[ModelMessage]:
-    """Remove tool call/response pairs where not all parallel tool calls were answered."""
+    """Drop tool-call / tool-return pairs that would break provider APIs.
+
+    OpenAI (and others) reject histories where a `tool` message isn't
+    preceded by a matching `tool_calls` message, or where a ModelResponse
+    emits tool calls that never got answered. Both shapes can appear after
+    retries or transient tool failures. This pass:
+
+      1. Drops ModelResponses whose tool calls weren't fully answered, and
+         strips the corresponding orphan ToolReturnParts from the next
+         ModelRequest.
+      2. Final guarantor walk: tracks every tool_call_id emitted by a
+         ModelResponse and strips any later ToolReturnPart whose id was
+         never emitted.
+    """
     cleaned: list[ModelMessage] = []
     i = 0
     while i < len(messages):
@@ -133,34 +72,26 @@ def sanitize_orphaned_tool_calls(messages: list[ModelMessage]) -> list[ModelMess
         cleaned.append(msg)
         i += 1
 
-    result: list[ModelMessage] = []
+    emitted_ids: set[str] = set()
+    guarded: list[ModelMessage] = []
     for msg in cleaned:
-        if isinstance(msg, ModelRequest):
-            return_parts = [p for p in msg.parts if isinstance(p, ToolReturnPart)]
-            if return_parts:
-                prev = result[-1] if result else None
-                if isinstance(prev, ModelResponse):
-                    prev_call_ids = {
-                        p.tool_call_id
-                        for p in prev.parts
-                        if isinstance(p, ToolCallPart)
-                    }
-                else:
-                    prev_call_ids = set()
+        if isinstance(msg, ModelResponse):
+            for p in msg.parts:
+                if isinstance(p, ToolCallPart):
+                    emitted_ids.add(p.tool_call_id)
+            guarded.append(msg)
+        elif isinstance(msg, ModelRequest):
+            new_parts = [
+                p for p in msg.parts
+                if not (isinstance(p, ToolReturnPart) and p.tool_call_id not in emitted_ids)
+            ]
+            if not new_parts:
+                continue
+            if len(new_parts) != len(msg.parts):
+                guarded.append(dc_replace(msg, parts=new_parts))
+            else:
+                guarded.append(msg)
+        else:
+            guarded.append(msg)
 
-                orphaned_ids = {p.tool_call_id for p in return_parts} - prev_call_ids
-                if orphaned_ids:
-                    stripped = [
-                        p
-                        for p in msg.parts
-                        if not (
-                            isinstance(p, ToolReturnPart)
-                            and p.tool_call_id in orphaned_ids
-                        )
-                    ]
-                    if stripped:
-                        result.append(dc_replace(msg, parts=stripped))
-                    continue
-        result.append(msg)
-
-    return result if result else messages
+    return guarded if guarded else messages
