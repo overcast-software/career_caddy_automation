@@ -14,7 +14,8 @@ Or connect to the public MCP endpoint instead of direct API:
 import os
 import argparse
 import asyncio
-
+from lib.observability import configure_logfire
+configure_logfire("caddy-web")
 from pydantic_ai import Agent
 from src.agents.agent_factory import get_model, register_defaults
 from src.agents.caddy_poster import _CAREER_CADDY_SYSTEM_PROMPT, CareerCaddyResponse
@@ -43,12 +44,12 @@ def build_agent_direct() -> tuple[Agent, CareerCaddyDeps]:
 
 def build_agent_mcp(mcp_url: str) -> Agent:
     """Build an agent that talks to Career Caddy via the public MCP endpoint."""
-    from pydantic_ai.mcp import MCPServerSse
+    from pydantic_ai.mcp import MCPServerStreamableHTTP
 
     model = get_model("caddy")
     token = os.environ["CC_API_TOKEN"]
 
-    server = MCPServerSse(
+    server = MCPServerStreamableHTTP(
         url=mcp_url,
         headers={"Authorization": f"Bearer {token}"},
     )
@@ -57,8 +58,7 @@ def build_agent_mcp(mcp_url: str) -> Agent:
         model,
         name="career-caddy-mcp",
         system_prompt=_CAREER_CADDY_SYSTEM_PROMPT,
-        output_type=CareerCaddyResponse,
-        mcp_servers=[server],
+        toolsets=[server],
     )
     return agent
 
@@ -73,20 +73,24 @@ def main():
              "If omitted, connects directly to CC_API_BASE_URL."
     )
     parser.add_argument(
-        "--port", type=int, default=8080,
-        help="Port for the web UI (default: 8080)"
+        "--port", type=int, default=8888,
+        help="Port for the web UI (default: 8888)"
     )
     args = parser.parse_args()
+
+    import uvicorn
 
     if args.mcp:
         print(f"Connecting to MCP endpoint: {args.mcp}")
         agent = build_agent_mcp(args.mcp)
-        agent.to_web(port=args.port)
+        app = agent.to_web()
     else:
         base = os.environ.get("CC_API_BASE_URL", "http://localhost:8000")
         print(f"Connecting to Career Caddy API: {base}")
         agent, deps = build_agent_direct()
-        agent.to_web(port=args.port, deps=deps)
+        app = agent.to_web(deps=deps)
+
+    uvicorn.run(app, host="127.0.0.1", port=args.port)
 
 
 if __name__ == "__main__":
