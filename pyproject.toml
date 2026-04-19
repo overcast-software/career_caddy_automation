@@ -46,6 +46,7 @@ caddy-process      = "scripts.process_tagged:run"
 caddy-login        = "scripts.manual_login:run"
 caddy-poller       = "scripts.hold_poller:run"
 caddy-discover     = "scripts.discover_sites:main"
+caddy-analyze-screenshots = "scripts.analyze_screenshots:run"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src", "lib", "mcp_servers", "scripts"]

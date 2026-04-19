@@ -186,6 +186,7 @@ _ROLE_ENV_MAP = {
     "job_extractor": "JOB_EXTRACTOR_MODEL",
     "pipeline": "PIPELINE_MODEL",
     "browser_scraper": "BROWSER_SCRAPER_MODEL",
+    "screenshot_analyzer": "SCREENSHOT_ANALYZER_MODEL",
 }
 
 
