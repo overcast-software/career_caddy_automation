@@ -233,6 +233,7 @@ async def create_job_post_minimal(
     title: str,
     link: str,
     description: Optional[str] = None,
+    source: str = "email",
 ) -> str:
     """Create a job post with no company relationship.
 
@@ -240,8 +241,12 @@ async def create_job_post_minimal(
     the existing row (200) instead of a duplicate error. Use this for
     email-discovered postings where we don't have enough info to attach a
     company. Users can attach one later via the UI.
+
+    Stamps `source='email'` by default — this helper is the email-pipeline
+    entry point for incomplete postings. Backend uses the field for
+    provenance analytics (sankey 'stub' detection, per-source funnel).
     """
-    attrs: dict = {"title": title, "link": link}
+    attrs: dict = {"title": title, "link": link, "source": source}
     if description:
         attrs["description"] = description
     payload = {"data": {"type": "job-post", "attributes": attrs}}
@@ -271,6 +276,7 @@ async def create_job_post_with_company_check(
     company_industry: Optional[str] = None,
     company_size: Optional[str] = None,
     company_location: Optional[str] = None,
+    source: str = "chat",
 ) -> str:
     """Create a job post, creating the company first if it doesn't exist."""
     job_url = url or link
@@ -359,6 +365,9 @@ async def create_job_post_with_company_check(
             posted_date=posted_date,
         )
         attributes = job_data.model_dump(exclude={"company_id"}, exclude_none=True)
+        # Tag provenance so the backend sankey can attribute this post
+        # to the code path that created it (chat agent, email pipeline, ...).
+        attributes["source"] = source
         payload = {
             "data": {
                 "type": "job-post",
