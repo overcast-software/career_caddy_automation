@@ -7,6 +7,9 @@ Usage:
     uv run caddy-url https://example.com/job/posting
 """
 
+from lib.observability import configure_logfire
+configure_logfire("caddy-url")
+
 import os
 import uuid
 import logging

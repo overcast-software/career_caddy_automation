@@ -12,6 +12,9 @@ Usage:
     uv run caddy-email --url https://... # direct URL mode (skip email search)
 """
 
+from lib.observability import configure_logfire
+configure_logfire("caddy-email")
+
 import os
 import uuid
 import logging

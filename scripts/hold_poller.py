@@ -10,6 +10,9 @@ Usage:
     uv run caddy-poller
 """
 
+from lib.observability import configure_logfire
+configure_logfire("caddy-poller")
+
 import asyncio
 import json
 import logging

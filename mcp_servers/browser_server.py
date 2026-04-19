@@ -31,12 +31,9 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 import os
-
-try:
-    import logfire
-    _logfire_available = True
-except ImportError:
-    _logfire_available = False
+from lib.observability import configure_logfire
+configure_logfire("browser_mcp_server", scrubbing=False)
+import logfire
 
 from camoufox.async_api import AsyncCamoufox
 from camoufox.exceptions import CamoufoxNotInstalled
@@ -47,8 +44,6 @@ from lib.browser.credentials import Credentials
 from lib.browser.firefox_cookies import load_cookies_for_domain
 from lib.browser.session_store import SessionStore
 
-if _logfire_available and os.environ.get("LOGFIRE_TOKEN"):
-    logfire.configure(scrubbing=False, service_name="browser_mcp_server", console=False)
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("fastmcp").setLevel(logging.ERROR)
 
@@ -745,4 +740,15 @@ async def scrape_page(url: str) -> str:
 
 
 if __name__ == "__main__":
-    server.run(transport="sse", host="0.0.0.0", port=3004)
+    import argparse
+    parser = argparse.ArgumentParser(description="Browser MCP server (Camoufox).")
+    parser.add_argument(
+        "--mode", choices=["stdio", "sse"], default="stdio",
+        help="Transport: stdio (default; used when spawned as an MCP child) "
+             "or sse (standalone on 0.0.0.0:3004, used by discover_sites).",
+    )
+    args = parser.parse_args()
+    if args.mode == "sse":
+        server.run(transport="sse", host="0.0.0.0", port=3004)
+    else:
+        server.run()

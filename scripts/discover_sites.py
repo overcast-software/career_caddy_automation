@@ -29,7 +29,6 @@ from typing import Optional
 from urllib.parse import urlparse
 
 import yaml
-import logfire
 from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.mcp import MCPServerSSE
@@ -38,8 +37,9 @@ from pydantic_ai.mcp import MCPServerSSE
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.browser.credentials import Credentials, SiteConfig
+from lib.observability import configure_logfire
 
-logfire.configure(service_name="discover_sites", console=False)
+configure_logfire("caddy-discover")
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 

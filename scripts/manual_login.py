@@ -12,6 +12,9 @@ Usage:
     uv run caddy-login monster.com dice.com                     # via entry point
 """
 
+from lib.observability import configure_logfire
+configure_logfire("caddy-login")
+
 import asyncio
 import sys
 
