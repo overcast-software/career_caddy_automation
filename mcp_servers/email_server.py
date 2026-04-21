@@ -6,60 +6,16 @@ import email
 import json
 import logging
 import math
-import re
 import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-import html2text
 import logfire
-from bs4 import BeautifulSoup
 from fastmcp import Context, FastMCP
 from pydantic import BaseModel, Field
 
-# ---------------------------------------------------------------------------
-# Markdown noise stripping — shrinks LLM input for classification.
-# Marketing emails (LinkedIn, ZipRecruiter) are ~90% tracking URLs, invisible
-# padding, and boilerplate footer. "minimal" removes obvious junk; "classify"
-# additionally flattens markdown links/images since the classifier only needs
-# the prose, not URLs.
-# ---------------------------------------------------------------------------
-
-_ZW_CHARS = re.compile(r"[\u034f\u200b\u200c\u200d\u00ad\u2060\ufeff]")
-_TRIPLE_BLANK = re.compile(r"\n\s*\n\s*\n+")
-_TRACKING_IMG = re.compile(r"!\[\]\([^)]*\.(?:gif|png)[^)]*\)")
-_IMG = re.compile(r"!\[[^\]]*\]\([^)]*\)", re.DOTALL)
-_MD_LINK = re.compile(r"\[([^\]]+)\]\(\s*[^)]*\)", re.DOTALL)
-_BARE_URL = re.compile(r"https?://\S+")
-_HRULE = re.compile(r"(?m)^[-|*_\s]{3,}$")
-_PIPE_ONLY = re.compile(r"(?m)^[\s|]+$")
-_FOOTER = re.compile(
-    r"(?mi)^.*(unsubscribe|manage (your )?preferences|"
-    r"this (email|message) was sent|view (this|it) (in|online)|"
-    r"update your preferences|\xa9\s*20\d\d|all rights reserved|"
-    r"privacy policy|terms of (use|service)).*$"
-)
-
-
-def _clean_markdown(md: str, classify: bool = False) -> str:
-    """Strip noise from HTML-derived markdown.
-
-    classify=True is lossy — drops URLs/images/footer boilerplate. Don't use
-    when downstream needs links (e.g. url extraction).
-    """
-    md = _ZW_CHARS.sub("", md)
-    md = _TRACKING_IMG.sub("", md)
-    if classify:
-        md = _IMG.sub("", md)
-        md = _MD_LINK.sub(r"\1", md)
-        md = _BARE_URL.sub("", md)
-        md = _FOOTER.sub("", md)
-        md = _HRULE.sub("", md)
-        md = _PIPE_ONLY.sub("", md)
-    md = _TRIPLE_BLANK.sub("\n\n", md)
-    return md.strip()
-
+from mcp_servers.email_clean import clean_markdown, html_to_markdown
 
 logger = logging.getLogger(__name__)
 # Configuration
@@ -431,36 +387,17 @@ def _parse_email_with_content(
     content_source = "none"
 
     if parsed_email.content.html_content:
-        # Convert HTML to markdown using html2text
-        h = html2text.HTML2Text()
-        h.ignore_links = False
-        h.ignore_images = False
-        h.body_width = 0
-        h.unicode_snob = True
-        h.ignore_emphasis = False
-
-        try:
-            # First clean up the HTML with BeautifulSoup
-            soup = BeautifulSoup(parsed_email.content.html_content, "html.parser")
-
-            # Remove script and style elements
-            for script in soup(["script", "style"]):
-                script.decompose()
-
-            # Convert to markdown
-            markdown_content = h.handle(str(soup))
+        markdown_content = html_to_markdown(parsed_email.content.html_content)
+        if markdown_content:
             content_source = "html"
-        except Exception as e:
-            logfire.warning(f"Error converting HTML to markdown: {e}")
-            # Fallback to plain text
+        else:
             markdown_content = parsed_email.content.plain_text
             content_source = "plain_text_fallback"
     elif parsed_email.content.plain_text:
-        # Use plain text directly as markdown
         markdown_content = parsed_email.content.plain_text
         content_source = "plain_text"
 
-    markdown_content = _clean_markdown(markdown_content, classify=classify)
+    markdown_content = clean_markdown(markdown_content, classify=classify)
     original_length = len(markdown_content)
 
     # Log content sizes

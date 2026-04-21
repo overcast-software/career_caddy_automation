@@ -63,7 +63,6 @@ All commands support `--loop` and `--interval` for continuous operation.
 
 ```bash
 uv sync --extra browser   # camoufox + playwright (browser automation)
-uv sync --extra email     # fastmcp (MCP servers for email/browser)
 uv sync --extra ollama    # local Ollama LLM support
 uv sync --extra all       # everything
 ```

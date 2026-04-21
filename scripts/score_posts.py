@@ -77,7 +77,7 @@ async def _collect_candidates(api: ApiClient, limit: int) -> list[int]:
         raw = await get_scrapes(
             api,
             status="completed",
-            sort="-updated_at",
+            sort="-scraped_at",
             per_page=limit * 4,
         )
         resp = json.loads(raw)

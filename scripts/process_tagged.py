@@ -58,7 +58,7 @@ def fetch_pending_emails(limit: int) -> list[dict]:
             "search",
             "--format=json",
             f"--limit={limit}",
-            "tag:job_post AND NOT tag:caddy_processed",
+            "tag:job_post AND NOT tag:follow_up AND NOT tag:caddy_processed",
         ],
         capture_output=True,
         text=True,

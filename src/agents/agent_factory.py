@@ -185,6 +185,8 @@ _ROLE_ENV_MAP = {
     "caddy": "CADDY_MODEL",
     "chat": "CHAT_MODEL",
     "email_classifier": "EMAIL_CLASSIFIER_MODEL",
+    "job_post_refiner": "JOB_POST_REFINER_MODEL",
+    "followup_processor": "FOLLOWUP_PROCESSOR_MODEL",
     "job_extractor": "JOB_EXTRACTOR_MODEL",
     "pipeline": "PIPELINE_MODEL",
     "browser_scraper": "BROWSER_SCRAPER_MODEL",
@@ -354,6 +356,20 @@ def register_defaults() -> None:
     try:
         from pydantic_ai.mcp import MCPServerStdio
 
+        def _email_mcp_factory() -> "MCPServerStdio":
+            """Spawn the email MCP server matching CADDY_EMAIL_BACKEND.
+
+            Both backends expose identical tool names (list_emails, read_email,
+            search_email, search_by_tag, search_without_tag,
+            search_unevaluated_emails, tag_email, untag_email) so agents don't
+            branch on backend.
+            """
+            backend = os.environ.get("CADDY_EMAIL_BACKEND", "notmuch").lower()
+            script = (
+                "mcp_servers/imap_server.py" if backend == "imap" else "mcp_servers/email_server.py"
+            )
+            return MCPServerStdio("python", args=[script], env=os.environ.copy())
+
         register_agent(
             "email_classifier",
             AgentConfig(
@@ -362,8 +378,35 @@ def register_defaults() -> None:
                     "You are an email classifier. Read the email, determine if it "
                     "contains a job posting, and tag accordingly."
                 ),
+                toolset_factories=[_email_mcp_factory],
+                history_processors=_common_history,
+            ),
+        )
+
+        register_agent(
+            "job_post_refiner",
+            AgentConfig(
+                role="job_post_refiner",
+                system_prompt=(
+                    "Refine emails already flagged as job-related into 'new_post' or 'follow_up'."
+                ),
+                toolset_factories=[_email_mcp_factory],
+                history_processors=_common_history,
+            ),
+        )
+
+        register_agent(
+            "followup_processor",
+            AgentConfig(
+                role="followup_processor",
+                system_prompt=(
+                    "Process a follow-up email: find the matching job_application "
+                    "and infer its new status."
+                ),
+                deps_type=CareerCaddyDeps,
                 toolset_factories=[
-                    lambda: MCPServerStdio("python", args=["mcp_servers/email_server.py"]),
+                    _email_mcp_factory,
+                    lambda: CareerCaddyToolset(scope="application_tracking"),
                 ],
                 history_processors=_common_history,
             ),

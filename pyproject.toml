@@ -12,17 +12,15 @@ dependencies = [
     "rich<14",
     "logfire",
     "pyyaml",
+    "fastmcp>=3.0.0,<4",
+    "html2text",
+    "beautifulsoup4",
 ]
 
 [project.optional-dependencies]
 browser = [
     "playwright>=1.40.0",
     "camoufox>=0.4.11",
-    "beautifulsoup4",
-    "html2text",
-]
-email = [
-    "fastmcp>=3.0.0,<4",
 ]
 ollama = [
     "pydanticai-ollama",
@@ -31,14 +29,18 @@ a2a = [
     "fasta2a",
     "uvicorn[standard]>=0.24.0",
 ]
+imap = [
+    "aioimaplib",
+]
 all = [
-    "career-caddy-automation[browser,email,ollama,a2a]",
+    "career-caddy-automation[browser,ollama,a2a,imap]",
 ]
 
 [project.scripts]
 caddy-url      = "src.pipelines.url_to_caddy:run"
 caddy-email    = "src.pipelines.email_to_caddy:run"
 caddy-classify = "scripts.tag_emails:run"
+caddy-inbox    = "scripts.inbox_triage:run"
 caddy-web          = "src.pipelines.web_ui:main"
 caddy-orchestrator = "src.agents.a2a_orchestrator:run"
 caddy-gateway      = "mcp_servers.agents_gateway:main"

@@ -11,9 +11,8 @@ Standalone personal-automation toolkit that sits on top of [Career Caddy](https:
 Dependency manager is `uv`. Python ≥ 3.11.
 
 ```bash
-uv sync                         # base deps
+uv sync                         # base deps (includes fastmcp, html2text, bs4)
 uv sync --extra browser         # + playwright/camoufox
-uv sync --extra email           # + fastmcp (required for email/browser MCP servers)
 uv sync --extra ollama          # + local Ollama support
 uv sync --extra a2a             # + fasta2a + uvicorn (required for caddy-orchestrator/gateway a2a mode)
 uv sync --extra all             # everything
@@ -35,13 +34,18 @@ No test runner is configured — don't invent test commands.
 | `caddy-web` | `src.pipelines.web_ui:main` — pydantic-ai `to_web()` UI |
 | `caddy-url <url>` | `src.pipelines.url_to_caddy:run` — scrape one URL → post |
 | `caddy-email` | `src.pipelines.email_to_caddy:run` — notmuch → scrape → post |
-| `caddy-classify` | `scripts.tag_emails:run` — classify/tag emails daemon |
+| `caddy-classify` | `scripts.tag_emails:run` — classify/tag emails daemon (stage 1 only) |
+| `caddy-inbox` | `scripts.inbox_triage:run` — three-stage triage orchestrator (classify → refine → follow-up); see below |
 | `caddy-process` | `scripts.process_tagged:run` |
 | `caddy-orchestrator` | `src.agents.a2a_orchestrator:run` — A2A client/REPL (`--web` for UI) |
 | `caddy-gateway` | `mcp_servers.agents_gateway:main` — exposes sub-agents as MCP tools (default) or A2A services (`--mode a2a`) |
 | `caddy-login`, `caddy-poller`, `caddy-discover` | one-off browser utilities |
 
 Most long-running pipelines support `--loop` and `--interval`.
+
+### `caddy-inbox` triage pipeline
+
+`caddy-inbox` sequences three agents per email — classify (job-related? yes/no), refine (new posting vs. follow-up correspondence), follow-up (find matching job_application + set status) — and applies the tags `evaluated`, `job_post`, `refined`, `follow_up`, `caddy_processed` in order. Agents live in `src/agents/email_agents.py`; the loop in `scripts/inbox_triage.py`; the pluggable backend (`src/email_source/`, selected by `CADDY_EMAIL_BACKEND=notmuch|imap`) keeps classification agnostic of mail source. **Do not run `caddy-classify` / `caddy-process` as separate daemons against the same mailbox while `caddy-inbox` is looping** — they race on the same tags. The IMAP backend is scaffolded (`src/email_source/imap_source.py`) but raises `NotImplementedError`; notmuch is the default and only functioning backend today.
 
 ## Configuration
 
