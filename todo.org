@@ -39,13 +39,20 @@ https://url9751.alerts.jobot.com/ls/click?upn=u001.nzDSnI8Q0Y9UfX4wWW5-2BpGg733g
 https://url9751.alerts.jobot.com/ls/click?upn=u001.nzDSnI8Q0Y9UfX4wWW5-2BpLamDLJUw5zsWrRP9ba15kqpBU1PFPijhEoh5-2FPqB8m0-2BTxRyx9XCaQvnnuNVX4T-2BGwqeGaNv5uu0YAdZXhvaWd48WgrlA-2BkSetjs0h19tz6Dm6yAwPSvLmd0jRZJd63YzTZe1Gu9-2BEgLRZHIHu0-2Fzji4d2vBm7KJ4cvBGEE73plgz4c3fbl0BlI79djFYpj2ag-3D-3D9jkp_LE6cZWOQySnSB-2Bd7rKmoZeFPlDxPmTGtst19ATjV8uqjG8xd6FMnAlhu4UrfnFEeGmbxsYkxciX5RSU8r4D4k0oEBgdPlTV1X0BwytKxVE89UoXYP058meThwLMJsyn8rHwZ-2BhcW2r9jZHRZqWCwWHHWbFc3Yc-2BhPto1WQZIZWfGYUwOcFUMDCb2hIUIdayNiQ976pJj-2Fzu49g5Ptc8S8rRpJB-2FpXxvTfR2-2BC6PiGh9mN9cH9kknbAwksq-2BNxMmz8RXF7OD2IkAKD-2BAMGynIkQ-3D-3D
 
 https://url9751.alerts.jobot.com/ls/click?upn=u001.nzDSnI8Q0Y9UfX4wWW5-2BpLmDLJUw5zsWrRP9ba15kqq1FgSiupbhuMVj93WzKC41rzRd41Pk0QcS1hz-2FHhLqtG5Y1R4rALLYHE0u7dAAElqFG5q63x9oXaHhhDqYHJlyUfPHAVdIWtDHCIbA0mNGHfpRQfmxLcstEp9x4ALzmaRdWprI5B0DcY2t45cEqcFhpjkEwsjg56lGOvIXnGiL5g-3D-3D13KN_NE755C4sNRUd1jBQo-2BOPb25tnSx-2FZVStHCzurLhDLfQMduUVDJ4wdTehIkCuKoxUBapNwKrlpR0CfT-2BiwZpbFR5b-2F7w9-2FOdvAyBg1BbpybBNsHm7bHQX1-2FBAITxDX3MVYHdwmu-2FCKrRo6Wy0OpowKyvRQCa7kTUPbmBgZ3UqUf0ah3578g1NKVWhYCpxhwf9HRc5QvimrpS-2FCqVA3AwFm-2FXvMJEtTO7x1ucX2MgBD-2B7bNNjJY15hjWCCWhqwMJ7zGZ9MfvTF14wYhTHAO-2BEpGg-3D-3D
-* PROJ I want to be able to scrape from emails.
-Right now I have job email classifiers
-then job process pulls out job-posts and creates records.
-I want an additional step that also creates the scrape with hold status.
-then I want it to score the job posts.
-This was an expensive operation, with low success rate, but I"m curious about leaving it on and just seeing how much it costs
-* PROJ smtp email.
+* DONE auto-scrape + auto-score from email pipeline
+CLOSED: [2026-04-20 Mon]
+Implemented the plan in notes.org ("auto-scrape + auto-score from email pipeline"):
+- ~scripts/process_tagged.py~: after each job-post create/dup, when
+  ~CADDY_AUTO_SCRAPE=1~, POST ~create_scrape(url, job_post_id, status="hold")~
+  if no scrape exists yet for that job-post. ~caddy-poller~ picks them up.
+- New ~scripts/score_posts.py~ → ~caddy-score~ entrypoint. Polls for
+  ~scrape.status=completed~ job-posts that have no score yet and calls
+  ~score_job_post~. ~--loop~/~--interval~ supported. Each scoring call
+  wrapped in a logfire span ~score_posts.score_one~ for cost visibility.
+- ~get_scrapes~ gained a ~job_post_id~ filter (filter[job_post_id]).
+- Default off: ~CADDY_AUTO_SCRAPE~ unset, and scoring is off unless
+  ~caddy-score~ is running. Safe to enable gradually.
+* PROJ IMAP email.
 My email process works for me but I think we need to use an smtp email MCP to read emails
 Generic, let the agent read inbox or if specified a specific folder.  that way an user can do their own prefiltering
 * PROJ job-application update

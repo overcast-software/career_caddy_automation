@@ -38,6 +38,8 @@ from src.client.api_client import (
     ApiClient,
     create_job_post_minimal,
     create_job_post_with_company_check,
+    create_scrape,
+    get_scrapes,
 )
 
 logging.basicConfig(
@@ -110,6 +112,49 @@ def _api_client() -> ApiClient:
     return ApiClient(base_url, token)
 
 
+def _auto_scrape_enabled() -> bool:
+    return os.environ.get("CADDY_AUTO_SCRAPE", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _post_id_from_response(resp: dict) -> int | None:
+    data = resp.get("data") or {}
+    if isinstance(data, dict) and data.get("duplicate") and data.get("existing_id"):
+        try:
+            return int(data["existing_id"])
+        except (TypeError, ValueError):
+            return None
+    inner = data.get("data") if isinstance(data, dict) else None
+    if isinstance(inner, dict) and inner.get("id") is not None:
+        try:
+            return int(inner["id"])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+async def _ensure_hold_scrape(api: ApiClient, job_post_id: int, url: str) -> str | None:
+    """Create a hold-status scrape for this job-post if none exists. Returns status tag."""
+    try:
+        existing_raw = await get_scrapes(api, job_post_id=job_post_id, per_page=1)
+        existing = json.loads(existing_raw)
+        if existing.get("success"):
+            rows = (existing.get("data") or {}).get("data") or []
+            if rows:
+                return "exists"
+    except Exception as exc:
+        logger.warning("  scrape lookup failed for job_post %s: %s", job_post_id, exc)
+
+    try:
+        raw = await create_scrape(api, url=url, job_post_id=job_post_id, status="hold")
+        resp = json.loads(raw)
+        if resp.get("success"):
+            return "created"
+        logger.warning("  scrape create failed for job_post %s: %s", job_post_id, resp.get("error"))
+    except Exception as exc:
+        logger.warning("  scrape create raised for job_post %s: %s", job_post_id, exc)
+    return None
+
+
 async def process_single_email(email_id: str, api: ApiClient) -> dict:
     logger.info("Processing email: %s", email_id)
     try:
@@ -120,6 +165,8 @@ async def process_single_email(email_id: str, api: ApiClient) -> dict:
         created: list[str] = []
         duplicates: list[str] = []
         failed: list[tuple[str, str]] = []
+        scrapes_created = 0
+        auto_scrape = _auto_scrape_enabled()
         for link in extracted.job_urls:
             desc = link.description or None
             try:
@@ -156,22 +203,34 @@ async def process_single_email(email_id: str, api: ApiClient) -> dict:
             if is_duplicate:
                 duplicates.append(link.url)
                 logger.info("  job-post dup: %s  (%s)", link.title, link.url)
-                continue
-
-            if not resp.get("success"):
+            elif not resp.get("success"):
                 err = resp.get("error", "unknown error")
                 logger.warning("  job-post failed for %s: %s", link.url, err)
                 failed.append((link.url, str(err)))
                 continue
+            else:
+                created.append(link.url)
+                logger.info(
+                    "  job-post: %s @ %s  desc=%s  (%s)",
+                    link.title,
+                    link.company or "—",
+                    "yes" if link.description else "no",
+                    link.url,
+                )
 
-            created.append(link.url)
-            logger.info(
-                "  job-post: %s @ %s  desc=%s  (%s)",
-                link.title,
-                link.company or "—",
-                "yes" if link.description else "no",
-                link.url,
-            )
+            if auto_scrape:
+                post_id = _post_id_from_response(resp)
+                if post_id is None:
+                    logger.warning("  auto-scrape: could not extract job_post id for %s", link.url)
+                else:
+                    outcome = await _ensure_hold_scrape(api, post_id, link.url)
+                    if outcome == "created":
+                        scrapes_created += 1
+                        logger.info(
+                            "  scrape: hold created for job_post %s (%s)", post_id, link.url
+                        )
+                    elif outcome == "exists":
+                        logger.info("  scrape: already present for job_post %s", post_id)
 
         if failed:
             return {
@@ -190,6 +249,7 @@ async def process_single_email(email_id: str, api: ApiClient) -> dict:
             "kept": len(extracted.job_urls),
             "created": len(created),
             "duplicates": len(duplicates),
+            "scrapes_created": scrapes_created,
             "reasoning": extracted.reasoning,
         }
     except Exception as exc:
@@ -226,6 +286,7 @@ async def run_once(limit: int = 3) -> str:
             lines.append(
                 f"  [ok  ] {r.get('subject', '?')}  →  "
                 f"{r['created']} new, {r.get('duplicates', 0)} dup / {r['kept']} kept"
+                + (f", {r['scrapes_created']} hold scrape(s)" if r.get("scrapes_created") else "")
             )
         else:
             lines.append(f"  [FAIL] {r.get('subject', '?')}  →  {r.get('error', '?')}")

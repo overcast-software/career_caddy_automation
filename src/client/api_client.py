@@ -633,6 +633,7 @@ async def get_scrapes(
     page: int | None = None,
     per_page: int | None = None,
     status: str | None = None,
+    job_post_id: int | None = None,
 ) -> str:
     """Fetch scrape records."""
     if id is not None:
@@ -646,6 +647,8 @@ async def get_scrapes(
         params["per_page"] = per_page
     if status is not None:
         params["filter[status]"] = status
+    if job_post_id is not None:
+        params["filter[job_post_id]"] = job_post_id
     return await api.get("/api/v1/scrapes/", params=params)
 
 
