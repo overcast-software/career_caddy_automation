@@ -11,15 +11,17 @@ Or connect to the public MCP endpoint instead of direct API:
     uv run caddy-web --mcp https://mcp.careercaddy.online/mcp
 """
 
-import os
 import argparse
-import asyncio
+import os
+
 from lib.observability import configure_logfire
+
 configure_logfire("caddy-web")
 from pydantic_ai import Agent
+
 from src.agents.agent_factory import get_model, register_defaults
 from src.agents.caddy_poster import _CAREER_CADDY_SYSTEM_PROMPT, CareerCaddyResponse
-from src.client.toolset import CareerCaddyToolset, CareerCaddyDeps
+from src.client.toolset import CareerCaddyDeps, CareerCaddyToolset
 
 register_defaults()
 
@@ -64,17 +66,16 @@ def build_agent_mcp(mcp_url: str) -> Agent:
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Launch Career Caddy web UI (pydantic-ai to_web)"
-    )
+    parser = argparse.ArgumentParser(description="Launch Career Caddy web UI (pydantic-ai to_web)")
     parser.add_argument(
-        "--mcp", type=str, default=None,
+        "--mcp",
+        type=str,
+        default=None,
         help="MCP SSE endpoint URL (e.g. https://mcp.careercaddy.online/mcp). "
-             "If omitted, connects directly to CC_API_BASE_URL."
+        "If omitted, connects directly to CC_API_BASE_URL.",
     )
     parser.add_argument(
-        "--port", type=int, default=8888,
-        help="Port for the web UI (default: 8888)"
+        "--port", type=int, default=8888, help="Port for the web UI (default: 8888)"
     )
     args = parser.parse_args()
 

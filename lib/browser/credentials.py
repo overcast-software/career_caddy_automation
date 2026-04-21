@@ -1,9 +1,8 @@
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
-import yaml
 
-from dataclasses import dataclass, field
-from typing import Optional
+import yaml
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -25,9 +24,9 @@ class SiteConfig:
     login_url: str
     username_selector: str
     password_selector: str
-    submit_selector: Optional[str] = None
-    post_login_check: Optional[str] = None  # CSS selector present only when logged in
-    notes: Optional[list[str]] = None
+    submit_selector: str | None = None
+    post_login_check: str | None = None  # CSS selector present only when logged in
+    notes: list[str] | None = None
 
     def to_dict(self) -> dict:
         d = {
@@ -82,7 +81,7 @@ class Credentials:
         normalized = self.normalize_domain(domain)
         return self.domains.get(normalized, {})
 
-    def get_login_config(self, domain: str) -> Optional[SiteConfig]:
+    def get_login_config(self, domain: str) -> SiteConfig | None:
         """Return login automation config for a domain from sites.yml, or None."""
         normalized = self.normalize_domain(domain)
         return self.site_configs.get(normalized)
@@ -94,8 +93,8 @@ class Credentials:
 
     @staticmethod
     def load(
-        secrets_path: Optional[Path] = None,
-        sites_path: Optional[Path] = None,
+        secrets_path: Path | None = None,
+        sites_path: Path | None = None,
     ) -> "Credentials":
         """Load credentials from secrets.yml and optionally merge sites.yml metadata.
 
@@ -111,7 +110,7 @@ class Credentials:
         if not secrets_path.exists():
             raise FileNotFoundError(f"secrets.yml not found at {secrets_path.absolute()}")
 
-        with open(secrets_path, "r") as f:
+        with open(secrets_path) as f:
             secrets = yaml.safe_load(f) or {}
 
         domains: dict[str, dict[str, str]] = {}
@@ -121,12 +120,16 @@ class Credentials:
 
         site_configs: dict[str, SiteConfig] = {}
         if sites_path.exists():
-            with open(sites_path, "r") as f:
+            with open(sites_path) as f:
                 sites = yaml.safe_load(f) or {}
             for domain, cfg in sites.items():
                 if not isinstance(cfg, dict):
                     continue
-                if "login_url" not in cfg or "username_selector" not in cfg or "password_selector" not in cfg:
+                if (
+                    "login_url" not in cfg
+                    or "username_selector" not in cfg
+                    or "password_selector" not in cfg
+                ):
                     continue
                 site_configs[domain] = SiteConfig(
                     login_url=cfg["login_url"],

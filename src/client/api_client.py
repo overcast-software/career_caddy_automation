@@ -12,12 +12,11 @@ Usage:
 """
 
 import json
-from typing import Literal, Optional
+from typing import Literal
 from urllib.parse import urljoin
 
 import httpx
 from pydantic import BaseModel, Field
-
 
 # ---------------------------------------------------------------------------
 # Models
@@ -26,22 +25,22 @@ from pydantic import BaseModel, Field
 
 class APIResponse(BaseModel):
     success: bool
-    data: Optional[dict] = None
-    error: Optional[str] = None
-    status_code: Optional[int] = None
+    data: dict | None = None
+    error: str | None = None
+    status_code: int | None = None
 
 
 class JobPostCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
-    description: Optional[str] = None
+    description: str | None = None
     company_id: int = Field(..., gt=0)
-    location: Optional[str] = Field(None, max_length=100)
-    salary_min: Optional[int] = Field(None, ge=0)
-    salary_max: Optional[int] = Field(None, ge=0)
-    employment_type: Optional[str] = None
+    location: str | None = Field(None, max_length=100)
+    salary_min: int | None = Field(None, ge=0)
+    salary_max: int | None = Field(None, ge=0)
+    employment_type: str | None = None
     remote_ok: bool = False
-    link: Optional[str] = None
-    posted_date: Optional[str] = None
+    link: str | None = None
+    posted_date: str | None = None
 
 
 _APPLICATION_SORT_FIELDS = Literal[
@@ -70,6 +69,7 @@ _TYPE_TO_ROUTE = {
 
 def _inject_frontend_urls(data: dict) -> dict:
     """Add _frontend_url and strip API links so the LLM uses frontend paths."""
+
     def _tag(resource):
         if isinstance(resource, dict) and "type" in resource and "id" in resource:
             route = _TYPE_TO_ROUTE.get(resource["type"])
@@ -102,9 +102,7 @@ class ApiClient:
         if response.status_code in (200, 201, 202):
             body = response.json()
             _inject_frontend_urls(body)
-            result = APIResponse(
-                success=True, data=body, status_code=response.status_code
-            )
+            result = APIResponse(success=True, data=body, status_code=response.status_code)
         else:
             text = response.text[:500] if len(response.text) > 500 else response.text
             result = APIResponse(
@@ -150,14 +148,15 @@ class ApiClient:
 async def create_company(
     api: ApiClient,
     name: str,
-    description: Optional[str] = None,
-    website: Optional[str] = None,
-    industry: Optional[str] = None,
-    size: Optional[str] = None,
-    location: Optional[str] = None,
+    description: str | None = None,
+    website: str | None = None,
+    industry: str | None = None,
+    size: str | None = None,
+    location: str | None = None,
 ) -> str:
     """Create a new company."""
     from src.client.models import CompanyData as _CompanyData
+
     try:
         data = _CompanyData(
             name=name,
@@ -209,8 +208,8 @@ async def find_company_by_name(api: ApiClient, company_name: str) -> str:
 
 async def search_companies(
     api: ApiClient,
-    query: Optional[str] = None,
-    page_size: Optional[int] = None,
+    query: str | None = None,
+    page_size: int | None = None,
 ) -> str:
     """Search companies by name or display_name (case-insensitive OR match)."""
     params = {}
@@ -221,7 +220,7 @@ async def search_companies(
     return await api.get("/api/v1/companies/", params=params)
 
 
-async def get_companies(api: ApiClient, id: Optional[int] = None) -> str:
+async def get_companies(api: ApiClient, id: int | None = None) -> str:
     """Fetch companies. Pass id to retrieve a single company; omit for the full list."""
     if id is not None:
         return await api.get(f"/api/v1/companies/{id}/")
@@ -232,7 +231,7 @@ async def create_job_post_minimal(
     api: ApiClient,
     title: str,
     link: str,
-    description: Optional[str] = None,
+    description: str | None = None,
 ) -> str:
     """Create a job post with no company relationship.
 
@@ -256,21 +255,21 @@ async def find_job_post_by_link(api: ApiClient, link: str) -> str:
 async def create_job_post_with_company_check(
     api: ApiClient,
     title: str,
-    company_name: Optional[str] = None,
-    description: Optional[str] = None,
-    location: Optional[str] = None,
-    salary_min: Optional[int] = None,
-    salary_max: Optional[int] = None,
-    employment_type: Optional[str] = None,
+    company_name: str | None = None,
+    description: str | None = None,
+    location: str | None = None,
+    salary_min: int | None = None,
+    salary_max: int | None = None,
+    employment_type: str | None = None,
     remote_ok: bool = False,
-    url: Optional[str] = None,
-    link: Optional[str] = None,
-    posted_date: Optional[str] = None,
-    company_description: Optional[str] = None,
-    company_website: Optional[str] = None,
-    company_industry: Optional[str] = None,
-    company_size: Optional[str] = None,
-    company_location: Optional[str] = None,
+    url: str | None = None,
+    link: str | None = None,
+    posted_date: str | None = None,
+    company_description: str | None = None,
+    company_website: str | None = None,
+    company_industry: str | None = None,
+    company_size: str | None = None,
+    company_location: str | None = None,
 ) -> str:
     """Create a job post, creating the company first if it doesn't exist."""
     job_url = url or link
@@ -334,9 +333,7 @@ async def create_job_post_with_company_check(
                 )
             )
             if create_result.get("success"):
-                company_id = int(
-                    create_result.get("data", {}).get("data", {}).get("id")
-                )
+                company_id = int(create_result.get("data", {}).get("data", {}).get("id"))
             else:
                 return json.dumps(
                     APIResponse(
@@ -363,9 +360,7 @@ async def create_job_post_with_company_check(
             "data": {
                 "type": "job-post",
                 "attributes": attributes,
-                "relationships": {
-                    "company": {"data": {"type": "company", "id": str(company_id)}}
-                },
+                "relationships": {"company": {"data": {"type": "company", "id": str(company_id)}}},
             }
         }
         return await api.post("/api/v1/job-posts/", payload)
@@ -382,12 +377,12 @@ async def create_job_post_with_company_check(
 
 async def search_job_posts(
     api: ApiClient,
-    query: Optional[str] = None,
-    title: Optional[str] = None,
-    company: Optional[str] = None,
-    company_id: Optional[int] = None,
-    sort: Optional[str] = None,
-    page_size: Optional[int] = None,
+    query: str | None = None,
+    title: str | None = None,
+    company: str | None = None,
+    company_id: int | None = None,
+    sort: str | None = None,
+    page_size: int | None = None,
 ) -> str:
     """Search job posts by keyword, title, company name, or company ID."""
     params = {}
@@ -408,11 +403,11 @@ async def search_job_posts(
 
 async def get_job_posts(
     api: ApiClient,
-    id: Optional[int] = None,
-    sort: Optional[str] = None,
-    order: Optional[str] = None,
-    page: Optional[int] = None,
-    per_page: Optional[int] = None,
+    id: int | None = None,
+    sort: str | None = None,
+    order: str | None = None,
+    page: int | None = None,
+    per_page: int | None = None,
 ) -> str:
     """Fetch job posts. Pass id for a single post; omit for a paginated list."""
     if id is not None:
@@ -432,16 +427,16 @@ async def get_job_posts(
 async def update_job_post(
     api: ApiClient,
     job_post_id: int,
-    title: Optional[str] = None,
-    description: Optional[str] = None,
-    location: Optional[str] = None,
-    salary_min: Optional[int] = None,
-    salary_max: Optional[int] = None,
-    employment_type: Optional[str] = None,
-    remote_ok: Optional[bool] = None,
-    link: Optional[str] = None,
-    posted_date: Optional[str] = None,
-    company_id: Optional[int] = None,
+    title: str | None = None,
+    description: str | None = None,
+    location: str | None = None,
+    salary_min: int | None = None,
+    salary_max: int | None = None,
+    employment_type: str | None = None,
+    remote_ok: bool | None = None,
+    link: str | None = None,
+    posted_date: str | None = None,
+    company_id: int | None = None,
 ) -> str:
     """Update an existing job post's attributes or company relationship."""
     attributes = {}
@@ -488,8 +483,8 @@ async def create_job_application(
     api: ApiClient,
     job_post_id: int,
     status: str = "applied",
-    notes: Optional[str] = None,
-    applied_at: Optional[str] = None,
+    notes: str | None = None,
+    applied_at: str | None = None,
 ) -> str:
     """Create a new job application linked to an existing job post."""
     if job_post_id <= 0:
@@ -511,9 +506,7 @@ async def create_job_application(
         "data": {
             "type": "job-application",
             "attributes": attributes,
-            "relationships": {
-                "job-post": {"data": {"type": "job-post", "id": str(job_post_id)}}
-            },
+            "relationships": {"job-post": {"data": {"type": "job-post", "id": str(job_post_id)}}},
         }
     }
     return await api.post("/api/v1/job-applications/", payload)
@@ -521,11 +514,11 @@ async def create_job_application(
 
 async def get_job_applications(
     api: ApiClient,
-    id: Optional[int] = None,
-    sort: Optional[_APPLICATION_SORT_FIELDS] = None,
-    order: Optional[Literal["asc", "desc"]] = None,
-    page: Optional[int] = None,
-    per_page: Optional[int] = None,
+    id: int | None = None,
+    sort: _APPLICATION_SORT_FIELDS | None = None,
+    order: Literal["asc", "desc"] | None = None,
+    page: int | None = None,
+    per_page: int | None = None,
 ) -> str:
     """Fetch job applications. Pass id for a single application; omit for a list."""
     if id is not None:
@@ -550,10 +543,10 @@ async def get_applications_for_job_post(api: ApiClient, job_post_id: int) -> str
 async def update_job_application(
     api: ApiClient,
     application_id: int,
-    status: Optional[str] = None,
-    notes: Optional[str] = None,
-    applied_at: Optional[str] = None,
-    company_id: Optional[int] = None,
+    status: str | None = None,
+    notes: str | None = None,
+    applied_at: str | None = None,
+    company_id: int | None = None,
 ) -> str:
     """Update a job application's status, notes, or company association."""
     attributes = {}
@@ -591,10 +584,10 @@ async def get_career_data(api: ApiClient) -> str:
 
 async def get_resumes(
     api: ApiClient,
-    id: Optional[int] = None,
-    favorite: Optional[bool] = None,
-    page: Optional[int] = None,
-    per_page: Optional[int] = None,
+    id: int | None = None,
+    favorite: bool | None = None,
+    page: int | None = None,
+    per_page: int | None = None,
 ) -> str:
     """Fetch resumes. Pass id for a single resume; omit for a paginated list."""
     if id is not None:
@@ -612,9 +605,9 @@ async def get_resumes(
 async def create_scrape(
     api: ApiClient,
     url: str,
-    job_post_id: Optional[int] = None,
-    company_id: Optional[int] = None,
-    status: Optional[str] = None,
+    job_post_id: int | None = None,
+    company_id: int | None = None,
+    status: str | None = None,
 ) -> str:
     """Create a scrape record."""
     attributes = {"url": url}
@@ -622,13 +615,9 @@ async def create_scrape(
         attributes["status"] = status
     relationships = {}
     if job_post_id is not None:
-        relationships["job-post"] = {
-            "data": {"type": "job-post", "id": str(job_post_id)}
-        }
+        relationships["job-post"] = {"data": {"type": "job-post", "id": str(job_post_id)}}
     if company_id is not None:
-        relationships["company"] = {
-            "data": {"type": "company", "id": str(company_id)}
-        }
+        relationships["company"] = {"data": {"type": "company", "id": str(company_id)}}
 
     payload: dict = {"data": {"type": "scrape", "attributes": attributes}}
     if relationships:
@@ -639,11 +628,11 @@ async def create_scrape(
 
 async def get_scrapes(
     api: ApiClient,
-    id: Optional[int] = None,
-    sort: Optional[str] = None,
-    page: Optional[int] = None,
-    per_page: Optional[int] = None,
-    status: Optional[str] = None,
+    id: int | None = None,
+    sort: str | None = None,
+    page: int | None = None,
+    per_page: int | None = None,
+    status: str | None = None,
 ) -> str:
     """Fetch scrape records."""
     if id is not None:
@@ -663,9 +652,9 @@ async def get_scrapes(
 async def update_scrape(
     api: ApiClient,
     scrape_id: int,
-    status: Optional[str] = None,
-    job_content: Optional[str] = None,
-    url: Optional[str] = None,
+    status: str | None = None,
+    job_content: str | None = None,
+    url: str | None = None,
 ) -> str:
     """Update a scrape record's status, content, or URL."""
     attributes = {}
@@ -694,11 +683,11 @@ async def update_scrape(
 
 async def get_questions(
     api: ApiClient,
-    id: Optional[int] = None,
-    company_id: Optional[int] = None,
-    job_post_id: Optional[int] = None,
-    page: Optional[int] = None,
-    per_page: Optional[int] = None,
+    id: int | None = None,
+    company_id: int | None = None,
+    job_post_id: int | None = None,
+    page: int | None = None,
+    per_page: int | None = None,
 ) -> str:
     """Fetch interview questions."""
     if id is not None:
@@ -717,11 +706,11 @@ async def get_questions(
 
 async def get_answers(
     api: ApiClient,
-    id: Optional[int] = None,
-    question_id: Optional[int] = None,
-    favorite: Optional[bool] = None,
-    page: Optional[int] = None,
-    per_page: Optional[int] = None,
+    id: int | None = None,
+    question_id: int | None = None,
+    favorite: bool | None = None,
+    page: int | None = None,
+    per_page: int | None = None,
 ) -> str:
     """Fetch answers to interview questions."""
     if id is not None:
@@ -744,9 +733,7 @@ async def score_job_post(api: ApiClient, job_post_id: int) -> str:
         "data": {
             "type": "score",
             "attributes": {},
-            "relationships": {
-                "job-post": {"data": {"type": "job-post", "id": str(job_post_id)}}
-            },
+            "relationships": {"job-post": {"data": {"type": "job-post", "id": str(job_post_id)}}},
         }
     }
     return await api.post("/api/v1/scores/", payload)
@@ -754,10 +741,10 @@ async def score_job_post(api: ApiClient, job_post_id: int) -> str:
 
 async def get_scores(
     api: ApiClient,
-    id: Optional[int] = None,
-    job_post_id: Optional[int] = None,
-    page: Optional[int] = None,
-    per_page: Optional[int] = None,
+    id: int | None = None,
+    job_post_id: int | None = None,
+    page: int | None = None,
+    per_page: int | None = None,
 ) -> str:
     """Fetch scores."""
     if id is not None:

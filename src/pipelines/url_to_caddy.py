@@ -8,20 +8,22 @@ Usage:
 """
 
 from lib.observability import configure_logfire
+
 configure_logfire("caddy-url")
 
-import os
-import uuid
-import logging
-import json
 import argparse
 import asyncio
+import json
+import logging
+import os
+import uuid
 
+from pydantic_ai.usage import UsageLimits
+
+from src.agents.agent_factory import get_agent, get_model, get_model_name, register_defaults
 from src.agents.caddy_poster import add_job_post
 from src.agents.job_extractor import extract_job_from_content
-from src.agents.agent_factory import get_model, get_model_name, get_agent, register_defaults
 from src.agents.usage_reporter import report_usage
-from pydantic_ai.usage import UsageLimits
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -65,25 +67,21 @@ async def scrape_url_and_add_to_caddy(url: str, pipeline_run_id: str | None = No
     logger.info(f"Extracted job data: {job_data.title} at {job_data.company_name}")
 
     # Add to Career Caddy
-    caddy_result = await add_job_post(
-        job_data, api_token=api_token, pipeline_run_id=run_id
-    )
+    caddy_result = await add_job_post(job_data, api_token=api_token, pipeline_run_id=run_id)
 
     print("\n=== Added Job Post to Career Caddy ===")
     print(f"Title: {job_data.title}")
     print(f"Company: {job_data.company_name}")
     print(f"Location: {job_data.location}")
     print(f"URL: {job_data.url}")
-    print(f"\nCareer Caddy Response:")
+    print("\nCareer Caddy Response:")
     print(json.dumps(caddy_result, indent=2))
 
     return caddy_result
 
 
 async def main():
-    parser = argparse.ArgumentParser(
-        description="Scrape a job URL and add it to Career Caddy"
-    )
+    parser = argparse.ArgumentParser(description="Scrape a job URL and add it to Career Caddy")
     parser.add_argument("url", type=str, help="Job posting URL to scrape")
     args = parser.parse_args()
 

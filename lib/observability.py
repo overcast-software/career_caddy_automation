@@ -26,6 +26,7 @@ def configure_logfire(service_name: str, **extra: Any) -> None:
 
     try:
         from dotenv import load_dotenv
+
         load_dotenv()
     except ImportError:
         pass

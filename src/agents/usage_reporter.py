@@ -51,8 +51,6 @@ async def report_usage(
                 timeout=10.0,
             )
             if resp.status_code not in (200, 201):
-                logger.warning(
-                    "Usage report failed: %s %s", resp.status_code, resp.text[:200]
-                )
+                logger.warning("Usage report failed: %s %s", resp.status_code, resp.text[:200])
     except Exception:
         logger.exception("Failed to report AI usage")

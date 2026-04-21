@@ -13,12 +13,14 @@ Usage:
 """
 
 from lib.observability import configure_logfire
+
 configure_logfire("caddy-login")
 
 import asyncio
 import sys
 
 from camoufox.async_api import AsyncCamoufox
+
 from lib.browser.credentials import Credentials
 from lib.browser.session_store import SessionStore
 

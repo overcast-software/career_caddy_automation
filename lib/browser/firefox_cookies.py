@@ -16,7 +16,6 @@ import shutil
 import sqlite3
 import tempfile
 from pathlib import Path
-from typing import Optional
 from urllib.parse import urlparse
 
 # Firefox sameSite integer → Playwright string
@@ -32,7 +31,7 @@ _PROFILE_BASES = [
 ]
 
 
-def find_firefox_cookies_db() -> Optional[Path]:
+def find_firefox_cookies_db() -> Path | None:
     """Return the path to the most likely Firefox cookies.sqlite.
 
     Prefers the 'default-release' profile, then any profile that has the file.
@@ -64,7 +63,7 @@ def _normalize_domain(domain: str) -> str:
 
 def load_cookies_for_domain(
     domain: str,
-    db_path: Optional[Path] = None,
+    db_path: Path | None = None,
 ) -> list[dict]:
     """Load Firefox cookies for *domain* and return them in Playwright format.
 
@@ -123,16 +122,18 @@ def _query_cookies(db: Path, bare_domain: str) -> list[dict]:
 
     cookies = []
     for row in rows:
-        cookies.append({
-            "name": row["name"],
-            "value": row["value"],
-            "domain": row["host"],          # keep leading dot if present
-            "path": row["path"],
-            "expires": int(row["expiry"]) if row["expiry"] and row["expiry"] > 0 else -1,
-            "httpOnly": bool(row["isHttpOnly"]),
-            "secure": bool(row["isSecure"]),
-            "sameSite": _SAME_SITE.get(row["sameSite"], "None"),
-        })
+        cookies.append(
+            {
+                "name": row["name"],
+                "value": row["value"],
+                "domain": row["host"],  # keep leading dot if present
+                "path": row["path"],
+                "expires": int(row["expiry"]) if row["expiry"] and row["expiry"] > 0 else -1,
+                "httpOnly": bool(row["isHttpOnly"]),
+                "secure": bool(row["isSecure"]),
+                "sameSite": _SAME_SITE.get(row["sameSite"], "None"),
+            }
+        )
     return cookies
 
 

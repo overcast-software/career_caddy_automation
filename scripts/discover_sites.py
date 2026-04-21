@@ -23,9 +23,8 @@ import asyncio
 import difflib
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 from urllib.parse import urlparse
 
 import yaml
@@ -50,11 +49,13 @@ _BROWSER_SSE = "http://localhost:3004/sse"
 # YAML notes file (per-domain append-only notes)
 _NOTES_PATH = _PROJECT_ROOT / "notes.yml"
 
+
 def _load_notes() -> dict:
     if not _NOTES_PATH.exists():
         return {}
     data = yaml.safe_load(_NOTES_PATH.read_text(encoding="utf-8")) or {}
     return data if isinstance(data, dict) else {}
+
 
 def _save_notes(notes: dict) -> None:
     _NOTES_PATH.write_text(
@@ -62,27 +63,29 @@ def _save_notes(notes: dict) -> None:
         encoding="utf-8",
     )
 
+
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # ---------------------------------------------------------------------------
 # Structured output the agent produces
 # ---------------------------------------------------------------------------
 
+
 class DiscoveredSiteConfig(BaseModel):
     login_url: str
     username_selector: str
     password_selector: str
-    submit_selector: Optional[str] = None
-    post_login_check: Optional[str] = None
-    notes: Optional[list[str]] = None
-
+    submit_selector: str | None = None
+    post_login_check: str | None = None
+    notes: list[str] | None = None
 
 
 # ---------------------------------------------------------------------------
 # Agent factory
 # ---------------------------------------------------------------------------
+
 
 def _build_discovery_agent(browser_server: MCPServerSSE) -> Agent:
     return Agent(
@@ -135,33 +138,35 @@ Your goal is to find:
 
 def _register_tools(agent: Agent) -> None:
     """Register all tools on the agent instance."""
-    
+
     @agent.tool
     async def read_site_notes(ctx: RunContext, domain: str) -> str:
-    """
-    Read prior notes for the given domain from notes.yml.
-    Returns a YAML document with only this domain's notes (or empty string if none).
-    """
-    key = Credentials.normalize_domain(domain)
-    notes = _load_notes()
-    entries = notes.get(key) or []
-    if not entries:
-        return ""
+        """
+        Read prior notes for the given domain from notes.yml.
+        Returns a YAML document with only this domain's notes (or empty string if none).
+        """
+        key = Credentials.normalize_domain(domain)
+        notes = _load_notes()
+        entries = notes.get(key) or []
+        if not entries:
+            return ""
         return yaml.safe_dump({key: entries}, allow_unicode=True, sort_keys=True)
 
     @agent.tool
-    async def append_site_note(ctx: RunContext, domain: str, note: str, tags: Optional[list[str]] = None) -> str:
-    """
-    Append a note entry for the domain into notes.yml with a UTC timestamp.
-    """
-    key = Credentials.normalize_domain(domain)
-    notes = _load_notes()
-    if key not in notes or notes[key] is None:
-        notes[key] = []
-    entry = {"timestamp": _now_iso(), "note": note}
-    if tags:
-        entry["tags"] = tags
-    notes[key].append(entry)
+    async def append_site_note(
+        ctx: RunContext, domain: str, note: str, tags: list[str] | None = None
+    ) -> str:
+        """
+        Append a note entry for the domain into notes.yml with a UTC timestamp.
+        """
+        key = Credentials.normalize_domain(domain)
+        notes = _load_notes()
+        if key not in notes or notes[key] is None:
+            notes[key] = []
+        entry = {"timestamp": _now_iso(), "note": note}
+        if tags:
+            entry["tags"] = tags
+        notes[key].append(entry)
         _save_notes(notes)
         return f"wrote note for {key}; total={len(notes[key])}"
 
@@ -169,6 +174,7 @@ def _register_tools(agent: Agent) -> None:
 # ---------------------------------------------------------------------------
 # sites.yml helpers
 # ---------------------------------------------------------------------------
+
 
 def _load_sites() -> dict:
     if not _SITES_PATH.exists():
@@ -180,7 +186,7 @@ def _load_sites() -> dict:
 def _save_sites(sites: dict) -> None:
     # Preserve the header comment by reading raw content first
     existing_raw = _SITES_PATH.read_text() if _SITES_PATH.exists() else ""
-    comment_lines = [l for l in existing_raw.splitlines() if l.startswith("#")]
+    comment_lines = [line for line in existing_raw.splitlines() if line.startswith("#")]
     header = "\n".join(comment_lines) + "\n" if comment_lines else ""
 
     body = yaml.dump(sites, default_flow_style=False, allow_unicode=True, sort_keys=True)
@@ -202,7 +208,7 @@ def _extract_host(s: str) -> str:
     return host.lower()
 
 
-def _resolve_credential_domain(host: str, creds: Credentials) -> Optional[str]:
+def _resolve_credential_domain(host: str, creds: Credentials) -> str | None:
     """
     Map a host (possibly a subdomain) to the best matching credentials domain.
     Strategy:
@@ -234,7 +240,10 @@ def _resolve_credential_domain(host: str, creds: Credentials) -> Optional[str]:
 # Discovery per domain
 # ---------------------------------------------------------------------------
 
-async def discover_domain(target_host: str, credential_domain: str, agent: Agent) -> Optional[SiteConfig]:
+
+async def discover_domain(
+    target_host: str, credential_domain: str, agent: Agent
+) -> SiteConfig | None:
     logger.info(f"Discovering login config for {target_host} (credentials: {credential_domain}) …")
     home_url = f"https://{target_host}"
     result = await agent.run(
@@ -263,10 +272,17 @@ async def discover_domain(target_host: str, credential_domain: str, agent: Agent
 # Main
 # ---------------------------------------------------------------------------
 
+
 async def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("domains", nargs="*", help="Domains to discover (default: all missing from sites.yml)")
-    parser.add_argument("--dry-run", action="store_true", help="Print what would run without writing")
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "domains", nargs="*", help="Domains to discover (default: all missing from sites.yml)"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print what would run without writing"
+    )
     args = parser.parse_args()
 
     creds = Credentials.load()
@@ -274,7 +290,7 @@ async def main() -> None:
 
     if args.domains:
         raw_targets = [d for d in args.domains]
-        targets: list[tuple[str, Optional[str]]] = []
+        targets: list[tuple[str, str | None]] = []
         for raw in raw_targets:
             host = _extract_host(raw).lstrip(".")
             if not host:
@@ -298,7 +314,7 @@ async def main() -> None:
     async with MCPServerSSE(_BROWSER_SSE) as browser_server:
         discovery_agent = _build_discovery_agent(browser_server)
         _register_tools(discovery_agent)
-        
+
         for host, cred_domain in targets:
             if cred_domain is None:
                 base = Credentials.normalize_domain(host)
@@ -318,7 +334,9 @@ async def main() -> None:
                     # Merge/append notes with any existing notes for this domain
                     existing_notes = list((sites.get(cred_domain, {}) or {}).get("notes") or [])
                     new_notes = list(new_cfg.get("notes") or [])
-                    merged_notes = existing_notes + new_notes if (existing_notes or new_notes) else None
+                    merged_notes = (
+                        existing_notes + new_notes if (existing_notes or new_notes) else None
+                    )
                     if merged_notes:
                         new_cfg["notes"] = merged_notes
                     sites[cred_domain] = new_cfg

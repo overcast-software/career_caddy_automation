@@ -4,17 +4,16 @@ Uses the CareerCaddyToolset to interact with the Career Caddy REST API.
 Handles duplicate detection, company creation, and structured responses.
 """
 
-import os
 import logging
-import json
-from typing import Optional
-from src.client.models import JobPostData
-from src.agents.agent_factory import get_model, get_model_name, get_agent, register_defaults
+import os
+
 from pydantic import BaseModel, Field
 from pydantic_ai.usage import UsageLimits
-from src.client.toolset import CareerCaddyDeps
-from src.agents.usage_reporter import report_usage
 
+from src.agents.agent_factory import get_agent, get_model, get_model_name, register_defaults
+from src.agents.usage_reporter import report_usage
+from src.client.models import JobPostData
+from src.client.toolset import CareerCaddyDeps
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -27,9 +26,9 @@ class CareerCaddyResponse(BaseModel):
     action_taken: str = Field(
         description="Action performed: 'created', 'duplicate', 'found', 'queried', 'error'"
     )
-    job_id: Optional[int] = Field(None, description="ID of the job post (if applicable)")
-    company_id: Optional[int] = Field(None, description="ID of the company (if applicable)")
-    details: Optional[dict] = Field(None, description="Additional data from the API")
+    job_id: int | None = Field(None, description="ID of the job post (if applicable)")
+    company_id: int | None = Field(None, description="ID of the company (if applicable)")
+    details: dict | None = Field(None, description="Additional data from the API")
 
 
 _CAREER_CADDY_SYSTEM_PROMPT = """
@@ -80,22 +79,35 @@ _CAREER_CADDY_SYSTEM_PROMPT = """
 register_defaults()
 
 
-async def parse_and_add_job(job_content: str, url: Optional[str] = None, scrape_id: Optional[int] = None) -> dict:
+async def parse_and_add_job(
+    job_content: str, url: str | None = None, scrape_id: int | None = None
+) -> dict:
     """Extract structured job data from raw content then add it to the system."""
     from src.agents.job_extractor import extract_job_from_content
 
-    logger.info("parse_and_add_job: extracting scrape_id=%s url=%s content_len=%s", scrape_id, url, len(job_content))
+    logger.info(
+        "parse_and_add_job: extracting scrape_id=%s url=%s content_len=%s",
+        scrape_id,
+        url,
+        len(job_content),
+    )
     try:
         job_data = await extract_job_from_content(job_content, url=url)
     except Exception as e:
         logger.error("parse_and_add_job: extraction failed: %s", e)
         return {"success": False, "error": f"Extraction failed: {e}"}
 
-    logger.info("parse_and_add_job: extracted title=%r company=%r, adding to system", job_data.title, job_data.company_name)
+    logger.info(
+        "parse_and_add_job: extracted title=%r company=%r, adding to system",
+        job_data.title,
+        job_data.company_name,
+    )
     return await add_job_post(job_data)
 
 
-async def add_job_post(job_data: JobPostData, api_token: str | None = None, pipeline_run_id: str | None = None) -> dict:
+async def add_job_post(
+    job_data: JobPostData, api_token: str | None = None, pipeline_run_id: str | None = None
+) -> dict:
     """Add a job post to Career Caddy via the agent."""
     logger.info(f"Adding job post: {job_data.title} at {job_data.company_name}")
 

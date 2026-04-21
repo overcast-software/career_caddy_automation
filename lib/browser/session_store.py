@@ -7,7 +7,7 @@ using atomic writes to prevent corruption.
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from lib.browser.credentials import Credentials
@@ -31,7 +31,7 @@ class SessionStore:
         path = self._path(domain)
         data = {
             "domain": Credentials.normalize_domain(domain),
-            "saved_at": datetime.now(timezone.utc).isoformat(),
+            "saved_at": datetime.now(UTC).isoformat(),
             "cookie_count": len(cookies),
             "cookies": cookies,
         }

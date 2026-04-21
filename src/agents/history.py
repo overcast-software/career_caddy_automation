@@ -39,13 +39,9 @@ def sanitize_orphaned_tool_calls(messages: list[ModelMessage]) -> list[ModelMess
                 j = i + 1
                 while j < len(messages) and isinstance(messages[j], ModelRequest):
                     req = messages[j]
-                    non_return_parts = [
-                        p for p in req.parts if not isinstance(p, ToolReturnPart)
-                    ]
+                    non_return_parts = [p for p in req.parts if not isinstance(p, ToolReturnPart)]
                     responded_ids |= {
-                        p.tool_call_id
-                        for p in req.parts
-                        if isinstance(p, ToolReturnPart)
+                        p.tool_call_id for p in req.parts if isinstance(p, ToolReturnPart)
                     }
                     if non_return_parts:
                         break
@@ -56,11 +52,9 @@ def sanitize_orphaned_tool_calls(messages: list[ModelMessage]) -> list[ModelMess
                     if i < len(messages) and isinstance(messages[i], ModelRequest):
                         req = messages[i]
                         stripped = [
-                            p for p in req.parts
-                            if not (
-                                isinstance(p, ToolReturnPart)
-                                and p.tool_call_id in pending_ids
-                            )
+                            p
+                            for p in req.parts
+                            if not (isinstance(p, ToolReturnPart) and p.tool_call_id in pending_ids)
                         ]
                         if len(stripped) != len(req.parts):
                             if stripped:
@@ -82,7 +76,8 @@ def sanitize_orphaned_tool_calls(messages: list[ModelMessage]) -> list[ModelMess
             guarded.append(msg)
         elif isinstance(msg, ModelRequest):
             new_parts = [
-                p for p in msg.parts
+                p
+                for p in msg.parts
                 if not (isinstance(p, ToolReturnPart) and p.tool_call_id not in emitted_ids)
             ]
             if not new_parts:

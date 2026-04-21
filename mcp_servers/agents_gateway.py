@@ -27,13 +27,13 @@ Approach B — Agent-as-A2A-Server
 
 from __future__ import annotations
 
-from lib.observability import configure_logfire
-
 import argparse
 import asyncio
 import logging
 import os
 import sys
+
+from lib.observability import configure_logfire
 
 logging.basicConfig(
     level=logging.INFO,
@@ -56,7 +56,6 @@ def _load_agents():
     """Import specialized agents. Done lazily so startup is fast."""
     from src.agents.agent_factory import get_agent, register_defaults
     from src.agents.caddy_poster import _CAREER_CADDY_SYSTEM_PROMPT, CareerCaddyResponse
-    from src.client.toolset import CareerCaddyDeps
 
     register_defaults()
 
@@ -164,9 +163,21 @@ async def _run_a2a_server(app, host: str, port: int, name: str):
 
 
 _A2A_AGENTS: dict[str, dict] = {
-    "email":   {"port": 3010, "name": "email-agent",         "description": "Searches and analyses job emails via notmuch."},
-    "caddy":   {"port": 3011, "name": "career-caddy-agent",  "description": "Manages job posts and companies in the Career Caddy API."},
-    "browser": {"port": 3012, "name": "browser-agent",       "description": "Scrapes job post pages via Camoufox browser automation."},
+    "email": {
+        "port": 3010,
+        "name": "email-agent",
+        "description": "Searches and analyses job emails via notmuch.",
+    },
+    "caddy": {
+        "port": 3011,
+        "name": "career-caddy-agent",
+        "description": "Manages job posts and companies in the Career Caddy API.",
+    },
+    "browser": {
+        "port": 3012,
+        "name": "browser-agent",
+        "description": "Scrapes job post pages via Camoufox browser automation.",
+    },
 }
 
 
@@ -174,7 +185,11 @@ def _build_a2a_app(agent_key: str):
     email_agent, caddy_agent, browser_agent = _load_agents()
     agent = {"email": email_agent, "caddy": caddy_agent, "browser": browser_agent}[agent_key]
     meta = _A2A_AGENTS[agent_key]
-    return agent.to_a2a(name=meta["name"], description=meta["description"]), meta["port"], meta["name"]
+    return (
+        agent.to_a2a(name=meta["name"], description=meta["description"]),
+        meta["port"],
+        meta["name"],
+    )
 
 
 async def run_a2a_mode(host: str, only: str | None = None):
@@ -210,20 +225,31 @@ def main():
         description="Career Caddy Agent Gateway — exposes agents to an orchestrator.",
     )
     parser.add_argument(
-        "--mode", choices=["mcp", "a2a"], default="mcp",
+        "--mode",
+        choices=["mcp", "a2a"],
+        default="mcp",
         help="Transport mode: 'mcp' (default) or 'a2a'.",
     )
     parser.add_argument("--host", default=HOST)
     parser.add_argument(
-        "--port", type=int, default=DEFAULT_PORT, help="Port (MCP mode only).",
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+        help="Port (MCP mode only).",
     )
     parser.add_argument(
-        "--only", choices=["email", "caddy", "browser"], default=None,
+        "--only",
+        choices=["email", "caddy", "browser"],
+        default=None,
         help="A2A mode only: start a single sub-agent instead of all three.",
     )
     args = parser.parse_args()
 
-    service = f"caddy-gateway-{args.only}" if args.only else ("caddy-gateway-a2a" if args.mode == "a2a" else "caddy-gateway-mcp")
+    service = (
+        f"caddy-gateway-{args.only}"
+        if args.only
+        else ("caddy-gateway-a2a" if args.mode == "a2a" else "caddy-gateway-mcp")
+    )
     configure_logfire(service)
 
     if args.mode == "a2a":

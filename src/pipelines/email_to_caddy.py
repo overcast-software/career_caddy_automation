@@ -13,22 +13,23 @@ Usage:
 """
 
 from lib.observability import configure_logfire
+
 configure_logfire("caddy-email")
 
-import os
-import uuid
-import logging
-import json
 import argparse
 import asyncio
+import logging
+import os
 import time
+import uuid
 
 from pydantic import BaseModel
+from pydantic_ai.usage import UsageLimits
+
+from src.agents.agent_factory import get_agent, get_model, get_model_name, register_defaults
 from src.agents.caddy_poster import add_job_post
 from src.agents.job_extractor import extract_job_from_content
-from src.agents.agent_factory import get_model, get_model_name, get_agent, register_defaults
 from src.agents.usage_reporter import report_usage
-from pydantic_ai.usage import UsageLimits
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -134,11 +135,9 @@ async def run_once(url: str | None = None):
         logger.info(f"Processing: {job.title}")
         return await _scrape_url_and_add(job.url, api_token, pipeline_run_id)
 
-    results = await asyncio.gather(
-        *[_process(job) for job in jobs], return_exceptions=True
-    )
+    results = await asyncio.gather(*[_process(job) for job in jobs], return_exceptions=True)
 
-    for job, result in zip(jobs, results):
+    for job, result in zip(jobs, results, strict=True):
         if isinstance(result, Exception):
             logger.error(f"Failed {job.title}: {result}")
 
@@ -146,19 +145,14 @@ async def run_once(url: str | None = None):
 
 
 async def main():
-    parser = argparse.ArgumentParser(
-        description="Email-to-Career Caddy pipeline"
-    )
+    parser = argparse.ArgumentParser(description="Email-to-Career Caddy pipeline")
+    parser.add_argument("--url", type=str, help="Directly scrape a job URL (skip email search)")
+    parser.add_argument("--loop", action="store_true", help="Run continuously on an interval")
     parser.add_argument(
-        "--url", type=str, help="Directly scrape a job URL (skip email search)"
-    )
-    parser.add_argument(
-        "--loop", action="store_true",
-        help="Run continuously on an interval"
-    )
-    parser.add_argument(
-        "--interval", type=int, default=60,
-        help="Minutes between runs when --loop is set (default: 60)"
+        "--interval",
+        type=int,
+        default=60,
+        help="Minutes between runs when --loop is set (default: 60)",
     )
     args = parser.parse_args()
 

@@ -27,18 +27,17 @@ Tools:
 import asyncio
 import json
 import logging
-from contextlib import asynccontextmanager
-from typing import Optional
-
 import os
+from contextlib import asynccontextmanager
+
 from lib.observability import configure_logfire
+
 configure_logfire("browser_mcp_server", scrubbing=False)
 import logfire
-
 from camoufox.async_api import AsyncCamoufox
 from camoufox.exceptions import CamoufoxNotInstalled
-from playwright.async_api import Browser, BrowserContext, Page
 from fastmcp import FastMCP
+from playwright.async_api import Browser, BrowserContext, Page
 
 from lib.browser.credentials import Credentials
 from lib.browser.firefox_cookies import load_cookies_for_domain
@@ -60,9 +59,16 @@ SCREENSHOT_DIR = Path(os.environ.get("SCREENSHOT_DIR", "screenshots"))
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
 LOGIN_WALL_SIGNALS = [
-    "sign in", "log in", "login", "create an account",
-    "forgot password", "enter your email", "join now",
-    "access denied", "not in our system", "contact support",
+    "sign in",
+    "log in",
+    "login",
+    "create an account",
+    "forgot password",
+    "enter your email",
+    "join now",
+    "access denied",
+    "not in our system",
+    "contact support",
     "continue to sign in",
 ]
 
@@ -74,10 +80,7 @@ def _is_headless() -> bool:
 def _detect_login_wall(content: str) -> bool:
     stripped = content.strip().lower()
     word_count = len(stripped.split())
-    return (
-        word_count < 200
-        and sum(1 for s in LOGIN_WALL_SIGNALS if s in stripped) >= 2
-    )
+    return word_count < 200 and sum(1 for s in LOGIN_WALL_SIGNALS if s in stripped) >= 2
 
 
 # ---------------------------------------------------------------------------
@@ -103,8 +106,10 @@ session_store = SessionStore()
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _domain_from_url(url: str) -> str:
     from urllib.parse import urlparse
+
     return Credentials.normalize_domain(urlparse(url).hostname or "")
 
 
@@ -142,8 +147,7 @@ async def _save_session(ctx: BrowserContext, domain: str) -> int:
     try:
         all_cookies = await ctx.cookies()
         domain_cookies = [
-            c for c in all_cookies
-            if Credentials.normalize_domain(c.get("domain", "")) == domain
+            c for c in all_cookies if Credentials.normalize_domain(c.get("domain", "")) == domain
         ]
         if domain_cookies:
             session_store.save(domain, domain_cookies)
@@ -157,9 +161,9 @@ async def _save_session(ctx: BrowserContext, domain: str) -> int:
 # Persistent browser session — lazy init, auto-recover on crash
 # ---------------------------------------------------------------------------
 
-_camoufox: Optional[AsyncCamoufox] = None
-_browser: Optional[Browser] = None
-_context: Optional[BrowserContext] = None
+_camoufox: AsyncCamoufox | None = None
+_browser: Browser | None = None
+_context: BrowserContext | None = None
 _tabs: dict[str, Page] = {}
 
 
@@ -173,9 +177,9 @@ async def _ensure_context() -> BrowserContext:
     try:
         _camoufox = AsyncCamoufox(headless=headless)
         _browser = await _camoufox.__aenter__()
-    except CamoufoxNotInstalled:
+    except CamoufoxNotInstalled as e:
         logging.critical("Camoufox browser binary not found. Run: python -m camoufox fetch")
-        raise SystemExit(1)
+        raise SystemExit(1) from e
     _context = await _browser.new_context()
     return _context
 
@@ -381,7 +385,7 @@ async def login_to_site(
     domain: str,
     username_selector: str,
     password_selector: str,
-    submit_selector: Optional[str] = None,
+    submit_selector: str | None = None,
 ) -> str:
     """Fill a login form using stored credentials without exposing them to the LLM.
 
@@ -418,7 +422,9 @@ async def login_to_site(
         # Persist session so future navigations skip login
         ctx = await _ensure_context()
         saved = await _save_session(ctx, Credentials.normalize_domain(domain))
-        return json.dumps({"status": f"Login form filled for {domain}", "session_cookies_saved": saved})
+        return json.dumps(
+            {"status": f"Login form filled for {domain}", "session_cookies_saved": saved}
+        )
     except Exception as e:
         return json.dumps({"error": str(e)})
 
@@ -528,8 +534,9 @@ async def ensure_authenticated(tab_id: str, domain: str) -> str:
     if login_cfg is None:
         if injected:
             return json.dumps({"authenticated": True, "method": "session"})
-        return json.dumps({"authenticated": False, "method": "none",
-                           "reason": "No login config in secrets.yml"})
+        return json.dumps(
+            {"authenticated": False, "method": "none", "reason": "No login config in secrets.yml"}
+        )
 
     # Step 2: Navigate to login URL
     try:
@@ -555,8 +562,13 @@ async def ensure_authenticated(tab_id: str, domain: str) -> str:
     username = creds.get("username") or creds.get("email", "")
     password = creds.get("password", "")
     if not username or not password:
-        return json.dumps({"authenticated": False, "method": "none",
-                           "reason": f"Incomplete credentials for {normalized}"})
+        return json.dumps(
+            {
+                "authenticated": False,
+                "method": "none",
+                "reason": f"Incomplete credentials for {normalized}",
+            }
+        )
 
     try:
         await page.fill(login_cfg.username_selector, username)
@@ -577,8 +589,13 @@ async def ensure_authenticated(tab_id: str, domain: str) -> str:
         try:
             await page.wait_for_selector(login_cfg.post_login_check, timeout=5_000)
         except Exception:
-            return json.dumps({"authenticated": False, "method": "login",
-                               "reason": "post_login_check selector not found after login"})
+            return json.dumps(
+                {
+                    "authenticated": False,
+                    "method": "login",
+                    "reason": "post_login_check selector not found after login",
+                }
+            )
 
     saved = await _save_session(ctx, normalized)
     return json.dumps({"authenticated": True, "method": "login", "session_cookies_saved": saved})
@@ -654,6 +671,7 @@ async def scrape_page(url: str) -> str:
         url: Full URL including protocol.
     """
     from urllib.parse import urlparse
+
     raw_domain = urlparse(url).hostname or ""
     norm_domain = Credentials.normalize_domain(raw_domain) if raw_domain else ""
     cookies: list[dict] = []
@@ -710,18 +728,20 @@ async def scrape_page(url: str) -> str:
                     # Detect login walls
                     if _detect_login_wall(content):
                         word_count = len(content.strip().split())
-                        return json.dumps({
-                            "title": await page.title(),
-                            "url": page.url,
-                            "content": "",
-                            "error": "login_wall_detected",
-                            "message": (
-                                f"Page appears to be a login wall ({word_count} words, "
-                                "login signals found). Use ensure_authenticated or "
-                                "manual_login.py to seed session cookies for this domain."
-                            ),
-                            "screenshot": screenshot_name,
-                        })
+                        return json.dumps(
+                            {
+                                "title": await page.title(),
+                                "url": page.url,
+                                "content": "",
+                                "error": "login_wall_detected",
+                                "message": (
+                                    f"Page appears to be a login wall ({word_count} words, "
+                                    "login signals found). Use ensure_authenticated or "
+                                    "manual_login.py to seed session cookies for this domain."
+                                ),
+                                "screenshot": screenshot_name,
+                            }
+                        )
 
                 return json.dumps(
                     {
@@ -734,18 +754,21 @@ async def scrape_page(url: str) -> str:
             except Exception as e:
                 return json.dumps({"error": str(e)})
     except CamoufoxNotInstalled:
-        return json.dumps({
-            "error": "Camoufox browser binary not found. Run: python -m camoufox fetch"
-        })
+        return json.dumps(
+            {"error": "Camoufox browser binary not found. Run: python -m camoufox fetch"}
+        )
 
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser(description="Browser MCP server (Camoufox).")
     parser.add_argument(
-        "--mode", choices=["stdio", "sse"], default="stdio",
+        "--mode",
+        choices=["stdio", "sse"],
+        default="stdio",
         help="Transport: stdio (default; used when spawned as an MCP child) "
-             "or sse (standalone on 0.0.0.0:3004, used by discover_sites).",
+        "or sse (standalone on 0.0.0.0:3004, used by discover_sites).",
     )
     args = parser.parse_args()
     if args.mode == "sse":

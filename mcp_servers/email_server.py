@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-import os
 from lib.observability import configure_logfire
+
 configure_logfire("email_mcp_server")
-import logfire
 import email
-from pathlib import Path
-from typing import List, Optional, Dict, Any
-from datetime import datetime, timedelta
-from pydantic import BaseModel, Field
-from fastmcp import FastMCP, Context
 import json
-import re
-import subprocess
 import logging
 import math
-import html2text
-from bs4 import BeautifulSoup
+import re
+import subprocess
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any
 
+import html2text
+import logfire
+from bs4 import BeautifulSoup
+from fastmcp import Context, FastMCP
+from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
 # Markdown noise stripping — shrinks LLM input for classification.
@@ -60,6 +60,7 @@ def _clean_markdown(md: str, classify: bool = False) -> str:
     md = _TRIPLE_BLANK.sub("\n\n", md)
     return md.strip()
 
+
 logger = logging.getLogger(__name__)
 # Configuration
 source = "~/.mail"
@@ -86,8 +87,8 @@ class NotmuchSearchResult(BaseModel):
     total: int
     authors: str
     subject: str
-    query: Optional[List[Optional[str]]] = None
-    tags: List[str]
+    query: list[str | None] | None = None
+    tags: list[str]
 
     @property
     def email_id(self) -> str:
@@ -104,13 +105,13 @@ class NotmuchSearchResult(BaseModel):
 class EmailHeader(BaseModel):
     """Simplified email header information for internal use"""
 
-    message_id: Optional[str] = None
+    message_id: str | None = None
     from_address: str
     to_address: str
     subject: str
-    date: Optional[datetime] = None
-    return_path: Optional[str] = None
-    spam_status: Optional[str] = None
+    date: datetime | None = None
+    return_path: str | None = None
+    spam_status: str | None = None
 
 
 class EmailContent(BaseModel):
@@ -152,7 +153,7 @@ class TagEmailArgs(BaseModel):
     """Arguments for tagging operations"""
 
     email_id: str = Field(description="The email ID to tag (from search results)")
-    tags: List[str] = Field(
+    tags: list[str] = Field(
         min_length=1,
         description="List of tags to add/remove (e.g., ['evaluated', 'job_post'])",
     )
@@ -173,7 +174,7 @@ class ReadEmailArgs(BaseModel):
 class SearchByTagArgs(BaseModel):
     """Arguments for searching by tags"""
 
-    tags: List[str] = Field(
+    tags: list[str] = Field(
         min_length=1, description="List of tags that ALL must be present (AND logic)"
     )
     limit: int = Field(
@@ -200,9 +201,7 @@ class MailReader:
         self.default_limit = default_limit
         self.default_days_back = default_days_back
 
-    def search_email(
-        self, query: str, limit: int = None, days_back: int = None
-    ) -> List[str]:
+    def search_email(self, query: str, limit: int = None, days_back: int = None) -> list[str]:
         """Search for emails and return email IDs"""
         if limit is None:
             limit = self.default_limit
@@ -238,18 +237,14 @@ class MailReader:
                     payload = part.get_payload(decode=True)
                     if payload:
                         try:
-                            plain_text += (
-                                payload.decode("utf-8", errors="ignore") + "\n"
-                            )
+                            plain_text += payload.decode("utf-8", errors="ignore") + "\n"
                         except Exception as e:
                             logfire.warning(f"Error decoding plain text: {e}")
                 elif content_type == "text/html":
                     payload = part.get_payload(decode=True)
                     if payload:
                         try:
-                            html_content += (
-                                payload.decode("utf-8", errors="ignore") + "\n"
-                            )
+                            html_content += payload.decode("utf-8", errors="ignore") + "\n"
                         except Exception as e:
                             logfire.warning(f"Error decoding HTML content: {e}")
         else:
@@ -268,7 +263,7 @@ class MailReader:
 
         return plain_text, html_content
 
-    def parse_email(self, email_id: str) -> Optional[ParsedEmail]:
+    def parse_email(self, email_id: str) -> ParsedEmail | None:
         """Parse a single email using notmuch show --format=raw + Python's email package"""
         try:
             # Use notmuch show --format=raw to get raw email content
@@ -298,10 +293,10 @@ class MailReader:
             logfire.warning(f"Error parsing email with id {email_id}: {e}")
             return None
 
-    def parse_email_from_file(self, filepath: str) -> Optional[ParsedEmail]:
+    def parse_email_from_file(self, filepath: str) -> ParsedEmail | None:
         """Parse an email file directly by filepath using Python's email package"""
         try:
-            with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            with open(filepath, encoding="utf-8", errors="ignore") as f:
                 raw = f.read()
             msg = email.message_from_string(raw)
             return self._build_parsed_email(msg, filepath, raw_size=len(raw))
@@ -312,9 +307,7 @@ class MailReader:
             logfire.warning(f"Error parsing email file {filepath}: {e}")
             return None
 
-    def parse_notmuch_search_results(
-        self, json_output: str
-    ) -> List[NotmuchSearchResult]:
+    def parse_notmuch_search_results(self, json_output: str) -> list[NotmuchSearchResult]:
         """Parse notmuch search JSON output into Pydantic models"""
         try:
             raw_results = json.loads(json_output) if json_output.strip() else []
@@ -379,7 +372,7 @@ def _build_date_range_query(days_back: float) -> str:
     return f"date:{start.strftime('%Y-%m-%d')}..{end.strftime('%Y-%m-%d')}"
 
 
-def _run_notmuch_search(query: str, limit: int) -> List[NotmuchSearchResult]:
+def _run_notmuch_search(query: str, limit: int) -> list[NotmuchSearchResult]:
     """Run notmuch search and return parsed results.
 
     Raises RuntimeError if notmuch exits non-zero.
@@ -396,7 +389,7 @@ def _run_notmuch_search(query: str, limit: int) -> List[NotmuchSearchResult]:
 
 
 def _format_search_results(
-    results: List[NotmuchSearchResult],
+    results: list[NotmuchSearchResult],
     query: str,
     title: str,
     empty_msg: str = "*No emails found.*",
@@ -420,7 +413,7 @@ def _format_search_results(
 
 def _parse_email_with_content(
     email_id: str, max_content_length: int = 4000, classify: bool = False
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Helper function to parse an email and convert all content to markdown.
 
     Args:
@@ -501,11 +494,7 @@ def _parse_email_with_content(
             "from": parsed_email.headers.from_address,
             "to": parsed_email.headers.to_address,
             "subject": parsed_email.headers.subject,
-            "date": (
-                parsed_email.headers.date.isoformat()
-                if parsed_email.headers.date
-                else None
-            ),
+            "date": (parsed_email.headers.date.isoformat() if parsed_email.headers.date else None),
             "message_id": parsed_email.headers.message_id,
         },
     }
@@ -550,8 +539,12 @@ async def list_emails(query: str = "*", limit: int = 50, days_back: float = 7) -
     try:
         results = _run_notmuch_search(full_query, limit)
         logfire.info(f"list_emails: {len(results)} results")
-        return _format_search_results(results, full_query, "Email Search Results",
-                                      empty_msg="*No emails found matching the query.*")
+        return _format_search_results(
+            results,
+            full_query,
+            "Email Search Results",
+            empty_msg="*No emails found matching the query.*",
+        )
     except RuntimeError as e:
         return f"notmuch command failed: {e}"
     except Exception as e:
@@ -621,7 +614,7 @@ async def read_email(
         # Log the final JSON size
         result_json = json.dumps(combined_result, indent=2, default=str)
         logfire.info(
-            f"read_email result",
+            "read_email result",
             email_id=email_id,
             result_length=len(result_json),
             content_source=parsed_data["content"]["content_source"],
@@ -635,7 +628,7 @@ async def read_email(
 
 
 @server.tool()
-async def tag_email(ctx: Context, email_id: str, tags: List[str]) -> str:
+async def tag_email(ctx: Context, email_id: str, tags: list[str]) -> str:
     """Add one or more tags to an email for organization and tracking.
 
     **Purpose**: Organize, categorize, and track email processing status using tags.
@@ -675,9 +668,7 @@ async def tag_email(ctx: Context, email_id: str, tags: List[str]) -> str:
         tag_args = [f"+{tag}" for tag in tags]
 
         result = subprocess.run(
-            ["notmuch", "tag"]
-            + tag_args
-            + ["--", format_email_id_for_notmuch(email_id)],
+            ["notmuch", "tag"] + tag_args + ["--", format_email_id_for_notmuch(email_id)],
             capture_output=True,
             text=True,
             timeout=10,
@@ -700,13 +691,11 @@ async def tag_email(ctx: Context, email_id: str, tags: List[str]) -> str:
             )
 
     except Exception as e:
-        return json.dumps(
-            {"success": False, "error": f"Error tagging email: {str(e)}"}, indent=2
-        )
+        return json.dumps({"success": False, "error": f"Error tagging email: {str(e)}"}, indent=2)
 
 
 @server.tool()
-async def untag_email(ctx: Context, email_id: str, tags: List[str]) -> str:
+async def untag_email(ctx: Context, email_id: str, tags: list[str]) -> str:
     """Remove one or more tags from an email.
 
     **Purpose**: Remove tags that are no longer relevant or were added by mistake.
@@ -738,9 +727,7 @@ async def untag_email(ctx: Context, email_id: str, tags: List[str]) -> str:
         tag_args = [f"-{tag}" for tag in tags]
 
         result = subprocess.run(
-            ["notmuch", "tag"]
-            + tag_args
-            + ["--", format_email_id_for_notmuch(email_id)],
+            ["notmuch", "tag"] + tag_args + ["--", format_email_id_for_notmuch(email_id)],
             capture_output=True,
             text=True,
             timeout=10,
@@ -763,14 +750,12 @@ async def untag_email(ctx: Context, email_id: str, tags: List[str]) -> str:
             )
 
     except Exception as e:
-        return json.dumps(
-            {"success": False, "error": f"Error untagging email: {str(e)}"}, indent=2
-        )
+        return json.dumps({"success": False, "error": f"Error untagging email: {str(e)}"}, indent=2)
 
 
 @server.tool()
 async def search_by_tag(
-    ctx: Context, tags: List[str], limit: int = 20, days_back: float = 7
+    ctx: Context, tags: list[str], limit: int = 20, days_back: float = 7
 ) -> str:
     """Find emails that have ALL of the specified tags (AND logic).
 
@@ -809,18 +794,23 @@ async def search_by_tag(
         tag_query = " AND ".join(f"tag:{tag}" for tag in tags)
         full_query = f"({tag_query}) AND {date_range}"
         results = _run_notmuch_search(full_query, limit)
-        return _format_search_results(results, full_query,
-                                      f"Emails with Tags: {', '.join(tags)}",
-                                      empty_msg="*No emails found with the specified tags.*")
+        return _format_search_results(
+            results,
+            full_query,
+            f"Emails with Tags: {', '.join(tags)}",
+            empty_msg="*No emails found with the specified tags.*",
+        )
     except RuntimeError as e:
         return json.dumps({"success": False, "error": str(e)}, indent=2)
     except Exception as e:
-        return json.dumps({"success": False, "error": f"Error searching by tag: {str(e)}"}, indent=2)
+        return json.dumps(
+            {"success": False, "error": f"Error searching by tag: {str(e)}"}, indent=2
+        )
 
 
 @server.tool()
 async def search_without_tag(
-    ctx: Context, tags: List[str], limit: int = 20, days_back: float = 1
+    ctx: Context, tags: list[str], limit: int = 20, days_back: float = 1
 ) -> str:
     """Find emails that do NOT have any of the specified tags (NOT logic).
 
@@ -858,13 +848,18 @@ async def search_without_tag(
         tag_query = " AND ".join(f"NOT tag:{tag}" for tag in tags)
         full_query = f"({tag_query}) AND {date_range}"
         results = _run_notmuch_search(full_query, limit)
-        return _format_search_results(results, full_query,
-                                      f"Emails WITHOUT Tags: {', '.join(tags)}",
-                                      empty_msg="*No emails found without the specified tags.*")
+        return _format_search_results(
+            results,
+            full_query,
+            f"Emails WITHOUT Tags: {', '.join(tags)}",
+            empty_msg="*No emails found without the specified tags.*",
+        )
     except RuntimeError as e:
         return json.dumps({"success": False, "error": str(e)}, indent=2)
     except Exception as e:
-        return json.dumps({"success": False, "error": f"Error searching without tag: {str(e)}"}, indent=2)
+        return json.dumps(
+            {"success": False, "error": f"Error searching without tag: {str(e)}"}, indent=2
+        )
 
 
 @server.tool()
@@ -913,11 +908,16 @@ async def search_unevaluated_emails(
     """
     try:
         date_range = _build_date_range_query(days_back)
-        full_query = (f"NOT tag:evaluated AND {date_range}" if query == "*"
-                      else f"({query}) AND NOT tag:evaluated AND {date_range}")
+        full_query = (
+            f"NOT tag:evaluated AND {date_range}"
+            if query == "*"
+            else f"({query}) AND NOT tag:evaluated AND {date_range}"
+        )
         results = _run_notmuch_search(full_query, limit)
         return _format_search_results(
-            results, full_query, "Unevaluated Emails",
+            results,
+            full_query,
+            "Unevaluated Emails",
             empty_msg="*No unevaluated emails found. All emails have been processed!*",
             footer='*These emails have NOT been evaluated yet. Use `read_email(email_id)` to get full content, then tag with `tag_email(email_id, ["evaluated", ...])`*\n',
         )
@@ -1005,8 +1005,12 @@ async def search_email(
         date_range = _build_date_range_query(days_back)
         full_query = date_range if query == "*" else f"({query}) AND {date_range}"
         results = _run_notmuch_search(full_query, limit)
-        return _format_search_results(results, full_query, "Email Search Results",
-                                      empty_msg="*No emails found matching the query.*")
+        return _format_search_results(
+            results,
+            full_query,
+            "Email Search Results",
+            empty_msg="*No emails found matching the query.*",
+        )
     except RuntimeError as e:
         return f"notmuch search failed: {e}"
     except Exception as e:

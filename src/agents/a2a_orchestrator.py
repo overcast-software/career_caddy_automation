@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 from lib.observability import configure_logfire
+
 configure_logfire("caddy-orchestrator")
 
 import asyncio
@@ -33,9 +34,7 @@ from pydantic_ai import Agent
 from src.agents.agent_factory import get_model, register_defaults
 from src.agents.history import sanitize_orphaned_tool_calls
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s %(levelname)-8s %(name)s  %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(name)s  %(message)s")
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -62,9 +61,7 @@ async def _get_agent_card(base_url: str) -> dict[str, Any]:
         return resp.json()
 
 
-async def _send_task(
-    base_url: str, message: str, context_id: str | None = None
-) -> dict[str, Any]:
+async def _send_task(base_url: str, message: str, context_id: str | None = None) -> dict[str, Any]:
     """
     Send a task to an A2A agent and return the completed task dict.
 
@@ -370,11 +367,7 @@ def run():
     if "--web" in sys.argv:
         import uvicorn
 
-        port = (
-            int(sys.argv[sys.argv.index("--port") + 1])
-            if "--port" in sys.argv
-            else 8090
-        )
+        port = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else 8090
         print(f"A2A Orchestrator web UI: http://127.0.0.1:{port}")
         uvicorn.run(app, host="127.0.0.1", port=port)
     else:

@@ -1,11 +1,11 @@
 """Pydantic-AI agent for extracting structured job post data from raw text/markdown."""
 
-import os
 import logging
-from typing import Optional
-from src.client.models import JobPostData
+import os
+
+from src.agents.agent_factory import get_agent, get_model, get_model_name, register_defaults
 from src.agents.usage_reporter import report_usage
-from src.agents.agent_factory import get_model, get_model_name, get_agent, register_defaults
+from src.client.models import JobPostData
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ def _get_extractor_agent():
 
 async def extract_job_from_content(
     job_content: str,
-    url: Optional[str] = None,
+    url: str | None = None,
     api_token: str | None = None,
     pipeline_run_id: str | None = None,
 ) -> JobPostData:
@@ -57,7 +57,9 @@ async def extract_job_from_content(
     prompt = job_content
     if url:
         prompt = f"Source URL: {url}\n\n{job_content}"
-    logger.info("extract_job_from_content: running extraction content_len=%s url=%s", len(job_content), url)
+    logger.info(
+        "extract_job_from_content: running extraction content_len=%s url=%s", len(job_content), url
+    )
     result = await agent.run(prompt)
 
     token = api_token or os.environ.get("CC_API_TOKEN", "")
@@ -74,5 +76,9 @@ async def extract_job_from_content(
     job_data: JobPostData = result.output
     if url and not job_data.link:
         job_data = job_data.model_copy(update={"link": url})
-    logger.info("extract_job_from_content: extracted title=%r company=%r", job_data.title, job_data.company_name)
+    logger.info(
+        "extract_job_from_content: extracted title=%r company=%r",
+        job_data.title,
+        job_data.company_name,
+    )
     return job_data

@@ -11,6 +11,7 @@ Usage:
 """
 
 from lib.observability import configure_logfire
+
 configure_logfire("caddy-poller")
 
 import asyncio
@@ -20,8 +21,8 @@ import os
 import signal
 import sys
 
-from src.client.api_client import ApiClient, get_scrapes, update_scrape
 from mcp_servers.browser_server import scrape_page
+from src.client.api_client import ApiClient, get_scrapes, update_scrape
 
 logging.basicConfig(
     level=logging.INFO,
@@ -71,6 +72,7 @@ async def process_scrape(api: ApiClient, scrape: dict) -> bool:
         screenshot_name = result.get("screenshot")
         if screenshot_name:
             from mcp_servers.browser_server import SCREENSHOT_DIR
+
             old_path = SCREENSHOT_DIR / screenshot_name
             new_name = f"scrape_{scrape_id}_{screenshot_name}"
             new_path = SCREENSHOT_DIR / new_name
@@ -79,7 +81,9 @@ async def process_scrape(api: ApiClient, scrape: dict) -> bool:
                 logger.info("Screenshot: %s", new_path)
 
         await update_scrape(api, scrape_id, status="completed", job_content=content)
-        logger.info("Scrape %s: content delivered (%d chars), API will extract", scrape_id, len(content))
+        logger.info(
+            "Scrape %s: content delivered (%d chars), API will extract", scrape_id, len(content)
+        )
 
         return True
 

@@ -54,3 +54,36 @@ packages = ["src", "lib", "mcp_servers", "scripts"]
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # bugbear
+]
+ignore = [
+    "E501",  # line length — let the formatter handle it
+    "B008",  # function call in default arg — common pydantic Field() pattern
+]
+
+[tool.ruff.lint.per-file-ignores]
+# configure_logfire() must run before other imports by design
+"scripts/*" = ["E402"]
+"mcp_servers/*" = ["E402"]
+"src/pipelines/*" = ["E402"]
+"src/agents/a2a_orchestrator.py" = ["E402"]
+
+[tool.ruff.format]
+quote-style = "double"

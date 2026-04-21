@@ -5,17 +5,16 @@ Wraps src/client/api_client.py functions as pydantic-ai tools so agents
 can call them with automatic ApiClient construction from deps.
 """
 
-import inspect
 import functools
+import inspect
 from dataclasses import dataclass
 from typing import Any
 
 from pydantic_ai import RunContext
 from pydantic_ai.toolsets.function import FunctionToolset
 
-from src.client.api_client import ApiClient
 from src.client import api_client
-
+from src.client.api_client import ApiClient
 
 # ---------------------------------------------------------------------------
 # Deps
@@ -76,18 +75,27 @@ TOOL_REGISTRY: dict[str, Any] = {
 SCOPES: dict[str, set[str]] = {
     "all": set(TOOL_REGISTRY.keys()),
     "job_discovery": {
-        "find_company_by_name", "search_companies", "get_companies",
-        "create_company", "create_job_post_with_company_check",
+        "find_company_by_name",
+        "search_companies",
+        "get_companies",
+        "create_company",
+        "create_job_post_with_company_check",
         "create_job_post_minimal",
-        "find_job_post_by_link", "search_job_posts",
+        "find_job_post_by_link",
+        "search_job_posts",
     },
     "application_tracking": {
-        "create_job_application", "get_job_applications",
-        "get_applications_for_job_post", "update_job_application",
-        "update_job_post", "find_job_post_by_link",
+        "create_job_application",
+        "get_job_applications",
+        "get_applications_for_job_post",
+        "update_job_application",
+        "update_job_post",
+        "find_job_post_by_link",
     },
     "scrape_management": {
-        "create_scrape", "get_scrapes", "update_scrape",
+        "create_scrape",
+        "get_scrapes",
+        "update_scrape",
     },
 }
 

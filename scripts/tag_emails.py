@@ -10,26 +10,28 @@ Usage:
 """
 
 from lib.observability import configure_logfire
+
 configure_logfire("caddy-classify")
 
+import argparse
+import asyncio
 import json
+import logging
 import os
 import re
 import subprocess
-import asyncio
-import argparse
 import time
-import logging
 from datetime import datetime, timedelta
 from email.header import decode_header
-from src.agents.usage_reporter import report_usage
+
 from src.agents.agent_factory import (
+    get_agent,
     get_model,
     get_model_name,
-    get_agent,
     register_defaults,
     resolve_model,
 )
+from src.agents.usage_reporter import report_usage
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -49,7 +51,7 @@ Reply with exactly one line and nothing else:
 
 register_defaults()
 _classifier_model = None  # populated in main() after parsing --model
-email_agent = None        # ditto
+email_agent = None  # ditto
 
 
 def _build_agent(model_spec: str | None):
@@ -94,8 +96,7 @@ def _decode_subject(s: str) -> str:
     try:
         parts = decode_header(s)
         return "".join(
-            p.decode(c or "utf-8", "ignore") if isinstance(p, bytes) else p
-            for p, c in parts
+            p.decode(c or "utf-8", "ignore") if isinstance(p, bytes) else p for p, c in parts
         )
     except Exception:
         return s
@@ -125,10 +126,12 @@ def fetch_unevaluated_emails(limit: int = 20, days_back: int = 7) -> list[dict]:
             email_id = query_arr[0]
             if email_id.startswith("id:"):
                 email_id = email_id[3:]
-            emails.append({
-                "email_id": email_id,
-                "subject": _decode_subject(thread.get("subject", "")),
-            })
+            emails.append(
+                {
+                    "email_id": email_id,
+                    "subject": _decode_subject(thread.get("subject", "")),
+                }
+            )
     return emails
 
 
@@ -154,7 +157,8 @@ def apply_tags(email_id: str, tags: list[str]) -> None:
     tag_args = [f"+{t}" for t in tags]
     subprocess.run(
         ["notmuch", "tag", *tag_args, "--", f"id:{email_id}"],
-        check=True, timeout=10,
+        check=True,
+        timeout=10,
     )
 
 
@@ -198,24 +202,25 @@ async def run_once():
             untagged += 1
         print(f"{'[JOB]' if is_job else '[---]'} {output.strip()}")
 
-    print(f"\nSummary: {tagged} job posts, {untagged} not job posts "
-          f"({skipped} pre-filtered, {len(emails) - skipped} via LLM)")
+    print(
+        f"\nSummary: {tagged} job posts, {untagged} not job posts "
+        f"({skipped} pre-filtered, {len(emails) - skipped} via LLM)"
+    )
 
 
 async def main():
-    parser = argparse.ArgumentParser(
-        description="Classify and tag emails as job postings"
+    parser = argparse.ArgumentParser(description="Classify and tag emails as job postings")
+    parser.add_argument("--loop", action="store_true", help="Run continuously on an interval")
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=60,
+        help="Minutes between runs when --loop is set (default: 60)",
     )
     parser.add_argument(
-        "--loop", action="store_true",
-        help="Run continuously on an interval"
-    )
-    parser.add_argument(
-        "--interval", type=int, default=60,
-        help="Minutes between runs when --loop is set (default: 60)"
-    )
-    parser.add_argument(
-        "--model", type=str, default=None,
+        "--model",
+        type=str,
+        default=None,
         help=(
             "Override the classifier model for this run. Accepts "
             "provider-qualified specs like 'openai:gpt-4o-mini', "

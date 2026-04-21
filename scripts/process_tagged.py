@@ -22,6 +22,7 @@ Usage:
 """
 
 from lib.observability import configure_logfire
+
 configure_logfire("caddy-process")
 
 import argparse
@@ -51,11 +52,15 @@ def fetch_pending_emails(limit: int) -> list[dict]:
     """Query notmuch for job_post emails not yet caddy_processed."""
     result = subprocess.run(
         [
-            "notmuch", "search", "--format=json",
+            "notmuch",
+            "search",
+            "--format=json",
             f"--limit={limit}",
             "tag:job_post AND NOT tag:caddy_processed",
         ],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     if result.returncode != 0:
         raise RuntimeError(f"notmuch failed: {result.stderr.strip()}")
@@ -67,12 +72,14 @@ def fetch_pending_emails(limit: int) -> list[dict]:
             continue
         raw_id = query_arr[0]
         email_id = raw_id[3:] if raw_id.startswith("id:") else raw_id
-        emails.append({
-            "email_id": email_id,
-            "subject": thread.get("subject", "(no subject)"),
-            "authors": thread.get("authors", ""),
-            "date_relative": thread.get("date_relative", ""),
-        })
+        emails.append(
+            {
+                "email_id": email_id,
+                "subject": thread.get("subject", "(no subject)"),
+                "authors": thread.get("authors", ""),
+                "date_relative": thread.get("date_relative", ""),
+            }
+        )
     return emails
 
 
@@ -80,7 +87,9 @@ def load_email_text(email_id: str) -> str:
     """Return the plain-text body of an email via `notmuch show`."""
     result = subprocess.run(
         ["notmuch", "show", "--format=text", "--body=true", f"id:{email_id}"],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     if result.returncode != 0:
         raise RuntimeError(f"notmuch show failed for {email_id}: {result.stderr.strip()}")
@@ -90,7 +99,8 @@ def load_email_text(email_id: str) -> str:
 def tag_processed(email_id: str) -> None:
     subprocess.run(
         ["notmuch", "tag", "+caddy_processed", f"id:{email_id}"],
-        check=True, timeout=10,
+        check=True,
+        timeout=10,
     )
 
 
@@ -123,7 +133,10 @@ async def process_single_email(email_id: str, api: ApiClient) -> dict:
                     )
                 else:
                     raw = await create_job_post_minimal(
-                        api, title=link.title, link=link.url, description=desc,
+                        api,
+                        title=link.title,
+                        link=link.url,
+                        description=desc,
                     )
             except Exception as exc:
                 logger.warning("  job-post raised for %s: %s", link.url, exc)
@@ -138,8 +151,7 @@ async def process_single_email(email_id: str, api: ApiClient) -> dict:
                 continue
 
             is_duplicate = (
-                resp.get("status_code") == 409
-                or (resp.get("data") or {}).get("duplicate") is True
+                resp.get("status_code") == 409 or (resp.get("data") or {}).get("duplicate") is True
             )
             if is_duplicate:
                 duplicates.append(link.url)
@@ -206,15 +218,17 @@ async def run_once(limit: int = 3) -> str:
     fail = len(results) - ok
     total_posts = sum(r.get("created", 0) for r in results)
 
-    lines = [f"Run complete: {len(results)} email(s), {ok} ok, {fail} failed, {total_posts} job-post(s) created"]
+    lines = [
+        f"Run complete: {len(results)} email(s), {ok} ok, {fail} failed, {total_posts} job-post(s) created"
+    ]
     for r in results:
         if r.get("success"):
             lines.append(
-                f"  [ok  ] {r.get('subject','?')}  →  "
+                f"  [ok  ] {r.get('subject', '?')}  →  "
                 f"{r['created']} new, {r.get('duplicates', 0)} dup / {r['kept']} kept"
             )
         else:
-            lines.append(f"  [FAIL] {r.get('subject','?')}  →  {r.get('error','?')}")
+            lines.append(f"  [FAIL] {r.get('subject', '?')}  →  {r.get('error', '?')}")
     summary = "\n".join(lines)
     logger.info("%s", summary)
     return summary
@@ -242,8 +256,12 @@ def run():
         description="Extract job URLs from tagged emails and push them to Career Caddy as scrapes."
     )
     parser.add_argument("--once", action="store_true", help="Run a single pass and exit")
-    parser.add_argument("--limit", type=int, default=3, metavar="N", help="Max emails per run (default: 3)")
-    parser.add_argument("--interval", type=int, default=60, metavar="MINUTES", help="Loop interval (default: 60)")
+    parser.add_argument(
+        "--limit", type=int, default=3, metavar="N", help="Max emails per run (default: 3)"
+    )
+    parser.add_argument(
+        "--interval", type=int, default=60, metavar="MINUTES", help="Loop interval (default: 60)"
+    )
     args = parser.parse_args()
 
     try:

@@ -1,6 +1,5 @@
 """Shared Pydantic models for job and company data."""
 
-from typing import Optional
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -10,15 +9,15 @@ class JobPostData(BaseModel):
     title: str = Field(..., min_length=1, max_length=200, description="Job title")
     description: str = Field(..., min_length=10, description="Job description")
     company_name: str = Field(..., min_length=1, description="Company name")
-    location: Optional[str] = Field(None, max_length=100, description="Job location")
-    salary_min: Optional[int] = Field(None, ge=0, description="Minimum salary")
-    salary_max: Optional[int] = Field(None, ge=0, description="Maximum salary")
-    employment_type: Optional[str] = Field(
+    location: str | None = Field(None, max_length=100, description="Job location")
+    salary_min: int | None = Field(None, ge=0, description="Minimum salary")
+    salary_max: int | None = Field(None, ge=0, description="Maximum salary")
+    employment_type: str | None = Field(
         None, description="Employment type (full-time, part-time, contract, etc.)"
     )
     remote_ok: bool = Field(default=False, description="Whether remote work is allowed")
     link: str = Field(None, description="Original job posting link (URL)")
-    url: Optional[str] = Field(None, description="Alias for link")
+    url: str | None = Field(None, description="Alias for link")
 
     @model_validator(mode="before")
     @classmethod
@@ -29,20 +28,14 @@ class JobPostData(BaseModel):
                 data["link"] = data["url"]
         return data
 
-    posted_date: Optional[str] = Field(
-        None, description="When the job was posted (ISO format)"
-    )
+    posted_date: str | None = Field(None, description="When the job was posted (ISO format)")
 
     # Company details (for creation if needed)
-    company_description: Optional[str] = Field(None, description="Company description")
-    company_website: Optional[str] = Field(None, description="Company website URL")
-    company_industry: Optional[str] = Field(
-        None, max_length=100, description="Company industry"
-    )
-    company_size: Optional[str] = Field(None, description="Company size")
-    company_location: Optional[str] = Field(
-        None, max_length=100, description="Company location"
-    )
+    company_description: str | None = Field(None, description="Company description")
+    company_website: str | None = Field(None, description="Company website URL")
+    company_industry: str | None = Field(None, max_length=100, description="Company industry")
+    company_size: str | None = Field(None, description="Company size")
+    company_location: str | None = Field(None, max_length=100, description="Company location")
 
     def model_post_init(self, __context):
         """Validate salary range if both min and max are provided."""
@@ -55,12 +48,8 @@ class CompanyData(BaseModel):
     """Data model for a company."""
 
     name: str = Field(..., min_length=1, max_length=200, description="Company name")
-    description: Optional[str] = Field(None, description="Company description")
-    website: Optional[str] = Field(None, description="Company website URL")
-    industry: Optional[str] = Field(
-        None, max_length=100, description="Company industry"
-    )
-    size: Optional[str] = Field(None, description="Company size")
-    location: Optional[str] = Field(
-        None, max_length=100, description="Company location"
-    )
+    description: str | None = Field(None, description="Company description")
+    website: str | None = Field(None, description="Company website URL")
+    industry: str | None = Field(None, max_length=100, description="Company industry")
+    size: str | None = Field(None, description="Company size")
+    location: str | None = Field(None, max_length=100, description="Company location")
