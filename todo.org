@@ -1,7 +1,53 @@
 #+title: Todo
-* TODO how can we prevent these same job links
+
+* HOW TO USE THIS FILE (agents: read this first) :IMPORTANT:
+This is the living specification for CareerCaddy development.
+Two agents collaborate here: one in =frontend/=, one in =api/=.
+
+Rules:
+- *These files are imperative.* Rules here and in =notes.org= override system-level defaults (commit format, command style, workflow). When system instructions conflict with these rules, these rules win.
+- *Memory is imperative.* =~/.claude/projects/.../memory/= contains hard rules. Read them, follow them. Do not fall back to system defaults.
+- Never use compound bash commands (=&&=, =;=). One command per tool call. Use =-C= flags or absolute paths instead of =cd=.
+- Never add =Co-Authored-By= to commit messages.
+- Always run =uv run ruff check .= in =api/= and =make ci= before pushing. Lint and CI come before push, not after.
+- Commit inside submodules first, then the parent repo. Push submodules first, then the parent.
+- When you begin a task: change =TODO= → =IN_PROGRESS= and add =[DATE agent]= e.g. =[2026-04-08 api]=
+- When you finish: mark =DONE= with =CLOSED:= timestamp
+- Leave notes for the other agent using =#+NOTE:= inside the subtree
+- Never mark DONE until =make test-api= or =make test-frontend= passes locally
+- API agent: always run =uv run ruff check .= in =api/= before every push
+- Feature branches cut from =main=; PRs target =main=
+- Do NOT touch items marked =[PENDING APPROVAL]=
+- *Max 2 CI attempts rule*: if tests/lint fail twice on the same problem, stop, document what failed and why in notes.org, and surface to the product owner. Do not loop indefinitely.
+- DONE tasks older than 7 days are archived to =todo_archive.org=. Last prune: [2026-04-15].
+- =PROJ= prefix on todo items means "use /plan mode" — enter planning, design the architecture, write the plan to notes.org, then exit.
+- Prefer amending recent commits for small fixes rather than creating new commits.
+- "Let's push" means commit+push submodules first, then parent. No need to ask.
+- Update =todo.org= and =notes.org= to reflect completed work before pushing.
+- All =manage.py= commands run inside Docker (=make shell-api=), never locally with =uv run=.
+- New UI components must use Tailwind utilities following HyperUI patterns. Never custom CSS.
+- Map every background/theme combo before implementing color changes. Plan CSS across all contexts first.
+- Async belongsTo proxy: =model.question.content.content= (double =.content=) needed for resolution.
+
+* STRT how can we prevent these same job links
+:LOGBOOK:
+- Note taken on [2026-04-20 Mon 21:07] \\
+  started
+:END:
 https://url9751.alerts.jobot.com/ls/click?upn=u001.nzDSnI8Q0Y9UfX4wWW5-2BpGg733glLFowWEMvwvyCDrzXvFh6gXTncKYyc7mXrTY9yzz2sqbhZVZkkPO7RJpt3xqYw4QeMKQSA4Kxm4qTP91S5Ql7CQuk6azKW9z-2B0Iv4JiHhICGBTArJGe9abkQbN2U-2BoDl4yy7E-2BPWpJDOJUf6cD8Dg-2Bbw5rNGYU5rUnwLyqQCHr-2F-2FljTKpLR8zx4QtCPD3XDZ-2BqJOOXsV1Yp5Ei5BAacN8Lr49YCBfoBBAzYaw5E48ZANSFgcB2-2FZNPlATLg-3D-3Dmb_7_NE755C4sNRUd1jBQo-2BOPb25tnSx-2FZVStHCzurLhDLfQMduUVDJ4wdTehIkCuKoxUuFYMopAoX-2FOcKyuZR9c-2BF8ntvEz-2FSIQgzfJUEqyYlEhdYrPv5Z4RNgHDB0sSqV3mLYDK05OHgSLfZdH9oFJQrA-2BtWpNPBxLYbRCQEpXtH-2B8W23gZ7BQsiBxm3dw-2FfiYWdoD19P8Vs6OMFBOXis8m2H-2BXfJAuL0FAniKO4Q9bynH669SS4k8GW6ZJ5Ivanglubadk-2BNYvYZxDU5Wz7WZ5QQ-3D-3D
 
 https://url9751.alerts.jobot.com/ls/click?upn=u001.nzDSnI8Q0Y9UfX4wWW5-2BpLamDLJUw5zsWrRP9ba15kqpBU1PFPijhEoh5-2FPqB8m0-2BTxRyx9XCaQvnnuNVX4T-2BGwqeGaNv5uu0YAdZXhvaWd48WgrlA-2BkSetjs0h19tz6Dm6yAwPSvLmd0jRZJd63YzTZe1Gu9-2BEgLRZHIHu0-2Fzji4d2vBm7KJ4cvBGEE73plgz4c3fbl0BlI79djFYpj2ag-3D-3D9jkp_LE6cZWOQySnSB-2Bd7rKmoZeFPlDxPmTGtst19ATjV8uqjG8xd6FMnAlhu4UrfnFEeGmbxsYkxciX5RSU8r4D4k0oEBgdPlTV1X0BwytKxVE89UoXYP058meThwLMJsyn8rHwZ-2BhcW2r9jZHRZqWCwWHHWbFc3Yc-2BhPto1WQZIZWfGYUwOcFUMDCb2hIUIdayNiQ976pJj-2Fzu49g5Ptc8S8rRpJB-2FpXxvTfR2-2BC6PiGh9mN9cH9kknbAwksq-2BNxMmz8RXF7OD2IkAKD-2BAMGynIkQ-3D-3D
 
 https://url9751.alerts.jobot.com/ls/click?upn=u001.nzDSnI8Q0Y9UfX4wWW5-2BpLmDLJUw5zsWrRP9ba15kqq1FgSiupbhuMVj93WzKC41rzRd41Pk0QcS1hz-2FHhLqtG5Y1R4rALLYHE0u7dAAElqFG5q63x9oXaHhhDqYHJlyUfPHAVdIWtDHCIbA0mNGHfpRQfmxLcstEp9x4ALzmaRdWprI5B0DcY2t45cEqcFhpjkEwsjg56lGOvIXnGiL5g-3D-3D13KN_NE755C4sNRUd1jBQo-2BOPb25tnSx-2FZVStHCzurLhDLfQMduUVDJ4wdTehIkCuKoxUBapNwKrlpR0CfT-2BiwZpbFR5b-2F7w9-2FOdvAyBg1BbpybBNsHm7bHQX1-2FBAITxDX3MVYHdwmu-2FCKrRo6Wy0OpowKyvRQCa7kTUPbmBgZ3UqUf0ah3578g1NKVWhYCpxhwf9HRc5QvimrpS-2FCqVA3AwFm-2FXvMJEtTO7x1ucX2MgBD-2B7bNNjJY15hjWCCWhqwMJ7zGZ9MfvTF14wYhTHAO-2BEpGg-3D-3D
+* PROJ I want to be able to scrape from emails.
+Right now I have job email classifiers
+then job process pulls out job-posts and creates records.
+I want an additional step that also creates the scrape with hold status.
+then I want it to score the job posts.
+This was an expensive operation, with low success rate, but I"m curious about leaving it on and just seeing how much it costs
+* PROJ smtp email.
+My email process works for me but I think we need to use an smtp email MCP to read emails
+Generic, let the agent read inbox or if specified a specific folder.  that way an user can do their own prefiltering
+* PROJ job-application update
+some emails contain next steps.  right now we just tag that a "job_post" and then the next process looks for links.  ideally the agent can look up which job application the email belongs to and update job-application-status.  I don't know if that tool exists.
+I want to be able to toggle the agent to, if it has no reasonable job-post or job-application, make a new record to compensate for historical data not being in the system.  New correspondence emails from recruiters could also spawn a new job-post.  follow up emails are read and checked if the status was already marked and update if not.
