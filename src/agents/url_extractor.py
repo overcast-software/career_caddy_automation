@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
 from pydantic import BaseModel, Field
@@ -45,12 +45,29 @@ _TRACKER_HOST_RE = re.compile(
 # Query params to strip from canonical URLs. Safe to drop — none affect which
 # job listing the URL points at.
 _TRACKING_PARAMS = {
-    "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
-    "gclid", "fbclid", "mc_cid", "mc_eid",
-    "trackingId", "refId", "lipi", "eid",
-    "midToken", "midSig", "otpToken", "trk", "trkEmail",
-    "tsid", "ssid", "fmid",
-    "email_source", "email_token",
+    "utm_source",
+    "utm_medium",
+    "utm_campaign",
+    "utm_content",
+    "utm_term",
+    "gclid",
+    "fbclid",
+    "mc_cid",
+    "mc_eid",
+    "trackingId",
+    "refId",
+    "lipi",
+    "eid",
+    "midToken",
+    "midSig",
+    "otpToken",
+    "trk",
+    "trkEmail",
+    "tsid",
+    "ssid",
+    "fmid",
+    "email_source",
+    "email_token",
 }
 
 
@@ -62,8 +79,9 @@ def _strip_tracking_params(url: str) -> str:
         return url
     if not p.query:
         return url
-    kept = [(k, v) for k, v in parse_qsl(p.query, keep_blank_values=True)
-            if k not in _TRACKING_PARAMS]
+    kept = [
+        (k, v) for k, v in parse_qsl(p.query, keep_blank_values=True) if k not in _TRACKING_PARAMS
+    ]
     return urlunparse(p._replace(query=urlencode(kept)))
 
 
@@ -74,10 +92,47 @@ _DEAD_LINK_MARKERS = re.compile(
     r"|you have clicked on an invalid"
     r"|this (job|position|posting) (is )?(no longer|has been) (available|removed|filled)"
     r"|job (not found|expired|has been removed)"
+    r"|expired job"
     r"|posting (no longer|has been) (available|active)"
     r"|page not found"
     r"|job you.re looking for"
+    r"|we.re sorry,? but this job has expired"
 )
+
+# Hosts that serve "listing expired" pages at HTTP 200 rather than 404, so
+# a bare status check doesn't catch them. For these we do a bounded GET and
+# scan for _DEAD_LINK_MARKERS even though they aren't tracker redirects.
+# Extend as new aggregators show up.
+_DEAD_CHECK_HOST_RE = re.compile(
+    r"(?i)^("
+    r"(www\.)?hiring\.cafe"
+    r"|(www\.)?hiringcafe\.com"
+    r")$"
+)
+
+
+async def _peek_for_dead_marker(client: httpx.AsyncClient, url: str) -> bool:
+    """Bounded GET that returns True iff the response body contains a dead-
+    listing marker. Network errors → False (don't drop on transient issues)."""
+    try:
+        async with client.stream(
+            "GET",
+            url,
+            follow_redirects=True,
+            timeout=3.0,
+            headers={"User-Agent": "Mozilla/5.0 (CareerCaddyResolver)"},
+        ) as r:
+            if r.status_code >= 400:
+                return False
+            body = b""
+            async for chunk in r.aiter_bytes():
+                body += chunk
+                if len(body) >= 16_384:
+                    break
+    except (TimeoutError, httpx.HTTPError) as exc:
+        logger.debug("dead-marker peek failed for %s: %s", url, exc)
+        return False
+    return bool(_DEAD_LINK_MARKERS.search(body.decode("utf-8", errors="ignore")))
 
 
 async def _resolve_one(client: httpx.AsyncClient, url: str) -> str | None:
@@ -94,11 +149,19 @@ async def _resolve_one(client: httpx.AsyncClient, url: str) -> str | None:
     except ValueError:
         return url
     if not _TRACKER_HOST_RE.match(host):
-        return _strip_tracking_params(url)
+        canonical = _strip_tracking_params(url)
+        if _DEAD_CHECK_HOST_RE.match(host):
+            if await _peek_for_dead_marker(client, canonical):
+                logger.info("%s serves an expired-listing page — dropping", canonical)
+                return None
+        return canonical
 
     try:
         async with client.stream(
-            "GET", url, follow_redirects=True, timeout=3.0,
+            "GET",
+            url,
+            follow_redirects=True,
+            timeout=3.0,
             headers={"User-Agent": "Mozilla/5.0 (CareerCaddyResolver)"},
         ) as r:
             if r.status_code >= 400:
@@ -111,7 +174,7 @@ async def _resolve_one(client: httpx.AsyncClient, url: str) -> str | None:
                 body += chunk
                 if len(body) >= 16_384:
                     break
-    except (httpx.HTTPError, asyncio.TimeoutError) as exc:
+    except (TimeoutError, httpx.HTTPError) as exc:
         logger.debug("tracker resolve failed, keeping raw URL %s: %s", url, exc)
         return _strip_tracking_params(url)
 
@@ -139,7 +202,7 @@ async def canonicalize_urls(links: list[JobLink]) -> list[JobLink]:
         )
 
     by_url: dict[str, JobLink] = {}
-    for link, canonical in zip(links, resolved):
+    for link, canonical in zip(links, resolved, strict=True):
         if canonical is None:
             continue
         link = link.model_copy(update={"url": canonical})
@@ -257,7 +320,6 @@ async def extract_job_urls(email_text: str) -> ExtractedUrls:
     after = len(extracted.job_urls)
     if after != before:
         extracted.reasoning = (
-            f"{extracted.reasoning} "
-            f"[canonicalized: {before}→{after}, {before - after} dedup/dead]"
+            f"{extracted.reasoning} [canonicalized: {before}→{after}, {before - after} dedup/dead]"
         ).strip()
     return extracted

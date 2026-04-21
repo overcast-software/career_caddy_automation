@@ -21,33 +21,32 @@ from src.agents.agent_factory import get_model, resolve_model
 
 class ScreenshotAnalysis(BaseModel):
     failure_mode: Literal[
-        "login_wall", "account_chooser", "captcha", "cookie_banner",
-        "geo_block", "rate_limit", "paywall", "empty_content", "unknown",
+        "login_wall",
+        "account_chooser",
+        "captcha",
+        "cookie_banner",
+        "geo_block",
+        "rate_limit",
+        "paywall",
+        "empty_content",
+        "expired_listing",
+        "unknown",
     ] = Field(description="Single best label for what the screenshot shows.")
-    summary: str = Field(description="1-2 sentences describing what is on screen and why the scrape failed.")
+    summary: str = Field(
+        description="1-2 sentences describing what is on screen and why the scrape failed."
+    )
     suggested_interaction_hint: str | None = Field(
         default=None,
         description=(
-            "Free-text instruction for the obstacle agent (e.g. 'If shown "
-            "Welcome Back, click Continue as <name>'). Omit if nothing actionable."
-        ),
-    )
-    suggested_ready_selector: str | None = Field(
-        default=None,
-        description=(
-            "CSS selector that reliably indicates real content has rendered. "
-            "Avoid bare tags (h1, div). Omit if not confident."
-        ),
-    )
-    suggested_obstacle_click_selector: str | None = Field(
-        default=None,
-        description=(
-            "CSS selector to click to clear the visible obstacle. "
-            "Never a sign-out/cancel/close button. Omit if not confident."
+            "Free-text instruction referring to what is VISIBLE on screen "
+            "(e.g. 'click the \"Accept all\" button', 'click Continue as "
+            "<name>'). NEVER invent CSS selectors, class names, or DOM "
+            "structure — you cannot see the DOM from a screenshot. Omit if "
+            "nothing actionable."
         ),
     )
     confidence: Literal["low", "medium", "high"] = Field(
-        description="Self-assessed confidence in the classification and suggestions.",
+        description="Self-assessed confidence in the classification and hint.",
     )
 
 
@@ -65,14 +64,22 @@ Classification rules:
 - rate_limit: 429 / "Too many requests" / temporary block.
 - paywall: Content behind a subscription/trial wall.
 - empty_content: Page loaded but main content area is empty.
+- expired_listing: The page renders a tombstone message like "Expired Job",
+  "This position is no longer available", "Job has been removed/filled",
+  "Posting closed". The listing itself is dead upstream — no selector or
+  interaction will recover it. Omit all suggested_* selectors/hints in this
+  case; the right downstream action is to close the application, not retry.
 - unknown: None of the above fit.
 
 Suggestion rules:
-- Only suggest a selector if it would reliably work on THIS host (never bare
-  tags like "h1" or "div" — they match promiscuously).
-- suggested_interaction_hint is free-text guidance a separate agent will
-  follow. NEVER suggest clicking sign-out, cancel, back, close, create an
-  account, or sign up. Be specific about the visible label/name.
+- You are looking at PIXELS, not HTML. You cannot see class names, ids, or
+  DOM structure. NEVER output CSS selectors or invented markup — a separate
+  grounding pass has the real HTML and will turn your hint into a selector.
+- suggested_interaction_hint is free-text guidance describing what a human
+  would do by looking at the screen. Reference visible text/labels exactly
+  as shown (e.g. 'click the "Accept all" button', 'click Continue as Matt').
+  NEVER suggest clicking sign-out, cancel, back, close, create an account,
+  or sign up.
 - Keep summary concise (1-2 sentences).
 - confidence=low when the screenshot is unclear or you're guessing.
 """

@@ -7,22 +7,22 @@ Model resolution order: role-specific env var → CADDY_DEFAULT_MODEL → openai
 """
 
 import os
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import AsyncIterator, Any, Callable
+from datetime import UTC, datetime
+from typing import Any
 
 from pydantic_ai import Agent
+from pydantic_ai._utils import PeekableAsyncStream
 from pydantic_ai.messages import ModelResponseStreamEvent
-from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.models import ModelRequestParameters
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import RequestUsage
-from pydantic_ai._utils import PeekableAsyncStream
 
 from src.agents.history import sanitize_orphaned_tool_calls
-from src.client.toolset import CareerCaddyToolset, CareerCaddyDeps
-
+from src.client.toolset import CareerCaddyDeps, CareerCaddyToolset
 
 # ---------------------------------------------------------------------------
 # Ollama support — only available when pydanticai_ollama is installed
@@ -32,6 +32,7 @@ try:
     from pydanticai_ollama.models.ollama import OllamaModel, OllamaStreamedResponse
     from pydanticai_ollama.providers.ollama import OllamaProvider
     from pydanticai_ollama.settings.ollama import OllamaModelSettings
+
     _HAS_OLLAMA = True
 except ImportError:
     _HAS_OLLAMA = False
@@ -41,6 +42,7 @@ except ImportError:
     OllamaModelSettings = None
 
 if _HAS_OLLAMA:
+
     class ConcreteOllamaProvider(OllamaProvider):
         """Concrete implementation of OllamaProvider with provider_url method."""
 
@@ -100,7 +102,7 @@ if _HAS_OLLAMA:
                 _response=peekable_response,
                 _model_name=self._model_name,
                 _model_profile=self.profile,
-                _timestamp=datetime.now(timezone.utc),
+                _timestamp=datetime.now(UTC),
             )
 
     ollama_settings = OllamaModelSettings(
@@ -187,6 +189,7 @@ _ROLE_ENV_MAP = {
     "pipeline": "PIPELINE_MODEL",
     "browser_scraper": "BROWSER_SCRAPER_MODEL",
     "screenshot_analyzer": "SCREENSHOT_ANALYZER_MODEL",
+    "selector_grounder": "SELECTOR_GROUNDER_MODEL",
 }
 
 
@@ -320,67 +323,82 @@ def register_defaults() -> None:
 
     _common_history = [sanitize_orphaned_tool_calls]
 
-    register_agent("caddy", AgentConfig(
-        role="caddy",
-        system_prompt=(
-            "You are a helpful agent to facilitate adding job posts and job "
-            "applications to the career caddy API. Follow the standard workflow: "
-            "check duplicates → create with company check → report result."
+    register_agent(
+        "caddy",
+        AgentConfig(
+            role="caddy",
+            system_prompt=(
+                "You are a helpful agent to facilitate adding job posts and job "
+                "applications to the career caddy API. Follow the standard workflow: "
+                "check duplicates → create with company check → report result."
+            ),
+            output_type=None,
+            deps_type=CareerCaddyDeps,
+            toolset_factories=[lambda: CareerCaddyToolset(scope="all")],
+            history_processors=_common_history,
         ),
-        output_type=None,
-        deps_type=CareerCaddyDeps,
-        toolset_factories=[lambda: CareerCaddyToolset(scope="all")],
-        history_processors=_common_history,
-    ))
+    )
 
-    register_agent("job_extractor", AgentConfig(
-        role="job_extractor",
-        system_prompt=(
-            "You are a precise job posting data extractor. Given raw job posting "
-            "text or markdown, extract and return structured data."
+    register_agent(
+        "job_extractor",
+        AgentConfig(
+            role="job_extractor",
+            system_prompt=(
+                "You are a precise job posting data extractor. Given raw job posting "
+                "text or markdown, extract and return structured data."
+            ),
+            output_type=None,
         ),
-        output_type=None,
-    ))
+    )
 
     try:
         from pydantic_ai.mcp import MCPServerStdio
 
-        register_agent("email_classifier", AgentConfig(
-            role="email_classifier",
-            system_prompt=(
-                "You are an email classifier. Read the email, determine if it "
-                "contains a job posting, and tag accordingly."
-            ),
-            toolset_factories=[
-                lambda: MCPServerStdio("python", args=["mcp_servers/email_server.py"]),
-            ],
-            history_processors=_common_history,
-        ))
-
-        register_agent("pipeline", AgentConfig(
-            role="pipeline",
-            system_prompt=(
-                "Search for emails tagged 'job_post'. For each email found, read it "
-                "and extract the job title and one primary job posting URL."
-            ),
-            toolset_factories=[
-                lambda: MCPServerStdio(
-                    "python", args=["mcp_servers/email_server.py"], env=os.environ.copy()
+        register_agent(
+            "email_classifier",
+            AgentConfig(
+                role="email_classifier",
+                system_prompt=(
+                    "You are an email classifier. Read the email, determine if it "
+                    "contains a job posting, and tag accordingly."
                 ),
-            ],
-        ))
-
-        register_agent("browser_scraper", AgentConfig(
-            role="browser_scraper",
-            system_prompt=(
-                "Use the scrape_page tool to retrieve all visible text from the "
-                "given URL. Return the raw text."
+                toolset_factories=[
+                    lambda: MCPServerStdio("python", args=["mcp_servers/email_server.py"]),
+                ],
+                history_processors=_common_history,
             ),
-            toolset_factories=[
-                lambda: MCPServerStdio(
-                    "python", args=["mcp_servers/browser_server.py"], env=os.environ.copy()
+        )
+
+        register_agent(
+            "pipeline",
+            AgentConfig(
+                role="pipeline",
+                system_prompt=(
+                    "Search for emails tagged 'job_post'. For each email found, read it "
+                    "and extract the job title and one primary job posting URL."
                 ),
-            ],
-        ))
+                toolset_factories=[
+                    lambda: MCPServerStdio(
+                        "python", args=["mcp_servers/email_server.py"], env=os.environ.copy()
+                    ),
+                ],
+            ),
+        )
+
+        register_agent(
+            "browser_scraper",
+            AgentConfig(
+                role="browser_scraper",
+                system_prompt=(
+                    "Use the scrape_page tool to retrieve all visible text from the "
+                    "given URL. Return the raw text."
+                ),
+                toolset_factories=[
+                    lambda: MCPServerStdio(
+                        "python", args=["mcp_servers/browser_server.py"], env=os.environ.copy()
+                    ),
+                ],
+            ),
+        )
     except ImportError:
         pass  # fastmcp not installed — MCP-based agents unavailable
