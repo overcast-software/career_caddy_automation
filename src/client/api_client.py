@@ -15,6 +15,7 @@ import json
 from typing import Literal
 from urllib.parse import urljoin
 
+from typing import Optional
 import httpx
 from pydantic import BaseModel, Field
 
@@ -310,22 +311,12 @@ async def create_job_post_with_company_check(
         )
 
     try:
-        if job_url:
-            existing = json.loads(await find_job_post_by_link(api, job_url))
-            if existing.get("success"):
-                posts = existing.get("data", {}).get("data", [])
-                if posts:
-                    existing_id = posts[0].get("id")
-                    return json.dumps(
-                        APIResponse(
-                            success=False,
-                            error=f"Duplicate: job post with this link already exists (id={existing_id})",
-                            status_code=409,
-                            data={"duplicate": True, "existing_id": existing_id},
-                        ).model_dump(),
-                        indent=2,
-                    )
-
+        # No client-side link-dedupe short-circuit. The API's POST handler
+        # owns dedupe (link match + fingerprint match) and now also merges
+        # incoming fields onto the existing row — bailing here would skip
+        # that merge, leaving stub posts (link known, company NULL) stuck
+        # in their original state forever. Process_tagged treats 200 as
+        # duplicate, so the caller-side bookkeeping is unchanged.
         company_search = json.loads(await find_company_by_name(api, company_name))
         company_id = None
         if company_search.get("success"):
