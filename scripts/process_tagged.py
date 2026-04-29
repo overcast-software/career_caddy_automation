@@ -177,8 +177,10 @@ async def process_single_email(email_id: str, api: ApiClient) -> dict:
                         company_name=link.company,
                         link=link.url,
                         description=desc,
+                        source="email",
                     )
                 else:
+                    # create_job_post_minimal defaults source='email' already.
                     raw = await create_job_post_minimal(
                         api,
                         title=link.title,
