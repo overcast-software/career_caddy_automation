@@ -41,6 +41,7 @@ class JobPostCreate(BaseModel):
     remote_ok: bool = False
     link: str | None = None
     posted_date: str | None = None
+    source: str | None = None
 
 
 _APPLICATION_SORT_FIELDS = Literal[
@@ -230,8 +231,9 @@ async def get_companies(api: ApiClient, id: int | None = None) -> str:
 async def create_job_post_minimal(
     api: ApiClient,
     title: str,
-    link: str,
+    link: str | None = None,
     description: str | None = None,
+    source: str = "email",
 ) -> str:
     """Create a job post with no company relationship.
 
@@ -239,8 +241,18 @@ async def create_job_post_minimal(
     the existing row (200) instead of a duplicate error. Use this for
     email-discovered postings where we don't have enough info to attach a
     company. Users can attach one later via the UI.
+
+    `link=None` is allowed for direct-correspondence emails (recruiter
+    cold-outreach with the JD inline and no scrapeable URL); the attribute
+    is omitted so the API's nullable column stores NULL.
+
+    `source` rides through to JobPost.source so the post can be filtered
+    by provenance later. Defaults to "email" because this helper is the
+    email-ingest path; pass "email_direct" for inline-JD postings.
     """
-    attrs: dict = {"title": title, "link": link}
+    attrs: dict = {"title": title, "source": source}
+    if link:
+        attrs["link"] = link
     if description:
         attrs["description"] = description
     payload = {"data": {"type": "job-post", "attributes": attrs}}
@@ -270,8 +282,15 @@ async def create_job_post_with_company_check(
     company_industry: str | None = None,
     company_size: str | None = None,
     company_location: str | None = None,
+    source: str = "email",
 ) -> str:
-    """Create a job post, creating the company first if it doesn't exist."""
+    """Create a job post, creating the company first if it doesn't exist.
+
+    `source` rides through to JobPost.source so the post can be filtered by
+    provenance later. Defaults to "email" because cc_auto's primary caller is
+    the email-ingest pipeline; pass "email_direct" for inline-JD postings
+    (recruiter cold-outreach with the JD inline and no scrapeable URL).
+    """
     job_url = url or link
     if not company_name:
         return json.dumps(
@@ -354,6 +373,7 @@ async def create_job_post_with_company_check(
             remote_ok=remote_ok,
             link=job_url,
             posted_date=posted_date,
+            source=source,
         )
         attributes = job_data.model_dump(exclude={"company_id"}, exclude_none=True)
         payload = {
