@@ -197,8 +197,12 @@ async def process_single_email(email_id: str, api: ApiClient) -> dict:
                 failed.append((link.url, f"unparseable response: {exc}"))
                 continue
 
+            # API returns 201 on a fresh create and 200 when the link/fingerprint
+            # already exists (echoes the canonical record). 409 + data.duplicate
+            # are kept for forward-compat with explicit-conflict responses.
             is_duplicate = (
-                resp.get("status_code") == 409 or (resp.get("data") or {}).get("duplicate") is True
+                resp.get("status_code") in (200, 409)
+                or (resp.get("data") or {}).get("duplicate") is True
             )
             if is_duplicate:
                 duplicates.append(link.url)
