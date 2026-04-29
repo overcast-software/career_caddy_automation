@@ -33,11 +33,19 @@ import os
 
 from src.agents.email_agents import (
     FollowupResult,
+    InlinePostResult,
     get_classify_agent,
     get_followup_agent,
+    get_inline_post_agent,
     get_refine_agent,
 )
-from src.client.api_client import ApiClient, get_job_applications, update_job_application
+from src.client.api_client import (
+    ApiClient,
+    create_job_post_minimal,
+    create_job_post_with_company_check,
+    get_job_applications,
+    update_job_application,
+)
 from src.client.toolset import CareerCaddyDeps
 from src.email_source import EmailMeta, EmailSource, make_source
 
@@ -99,6 +107,52 @@ async def _run_followup(agent, email_id: str, deps: CareerCaddyDeps) -> Followup
     return result.output
 
 
+async def _run_inline_post(agent, email_id: str) -> InlinePostResult:
+    result = await agent.run(f"Extract inline JobPost from email id: {email_id}")
+    return result.output
+
+
+async def _create_inline_job_post(api: ApiClient, res: InlinePostResult) -> str | None:
+    """POST a JobPost from an inline-JD email. Returns "created", "duplicate",
+    or None on failure. link is null; source is "email_direct"."""
+    description = res.description
+    if res.recruiter_contact:
+        description = f"Source: direct email from {res.recruiter_contact}\n\n{description}"
+    try:
+        if res.company:
+            raw = await create_job_post_with_company_check(
+                api,
+                title=res.title,
+                company_name=res.company,
+                description=description,
+                location=res.location,
+                salary_min=res.salary_min,
+                salary_max=res.salary_max,
+                remote_ok=res.remote_ok,
+                source="email_direct",
+            )
+        else:
+            raw = await create_job_post_minimal(
+                api,
+                title=res.title,
+                description=description,
+                source="email_direct",
+            )
+        resp = json.loads(raw)
+    except Exception as exc:
+        logger.warning("  inline job-post raised: %s", exc)
+        return None
+
+    if (resp.get("data") or {}).get("duplicate"):
+        return "duplicate"
+    if resp.get("status_code") in (200, 409):
+        return "duplicate"
+    if not resp.get("success"):
+        logger.warning("  inline job-post failed: %s", resp.get("error"))
+        return None
+    return "created"
+
+
 async def _apply_status_update(api: ApiClient, res: FollowupResult) -> bool:
     """PATCH the application if the new status differs. Returns True on
     success (including no-op)."""
@@ -137,6 +191,7 @@ async def _triage_one(
     classify_agent,
     refine_agent,
     followup_agent,
+    inline_post_agent,
     api: ApiClient,
     deps: CareerCaddyDeps,
 ) -> str:
@@ -159,19 +214,24 @@ async def _triage_one(
     if "job_post" in tags and "refined" not in tags:
         refined = await _run_refine(refine_agent, email_id)
         new_tags = ["refined"]
-        is_followup = refined.kind == "follow_up" and refined.confidence >= CONFIDENCE_FLOOR
+        confident = refined.confidence >= CONFIDENCE_FLOOR
+        is_followup = refined.kind == "follow_up" and confident
+        is_inline = refined.kind == "direct_solicitation" and confident
         if is_followup:
             new_tags.append("follow_up")
+        if is_inline:
+            new_tags.append("inline_post")
         await source.add_tags(email_id, new_tags)
         tags.update(new_tags)
+        prefix = "FUP" if is_followup else ("DIR" if is_inline else "NEW")
         logger.info(
             "[%s] %s  conf=%.2f  %s",
-            "FUP" if is_followup else "NEW",
+            prefix,
             email_id,
             refined.confidence,
             refined.evidence[:80],
         )
-        if not is_followup:
+        if not (is_followup or is_inline):
             return "new_post"
 
     # Stage 3 — follow-up processor (only if follow_up and not yet processed).
@@ -195,6 +255,34 @@ async def _triage_one(
         )
         return "unmatched"
 
+    # Stage 4 — inline-post extractor (direct-solicitation emails: JD inline,
+    # no scrapeable URL). Creates a JobPost with link=NULL and
+    # source="email_direct" so the post is distinguishable from URL-scraped
+    # email-sourced posts.
+    if "inline_post" in tags and "caddy_processed" not in tags:
+        res = await _run_inline_post(inline_post_agent, email_id)
+        if not res.title or res.confidence < CONFIDENCE_FLOOR:
+            logger.info(
+                "  inline-post low confidence for %s (conf=%.2f, title=%r): %s",
+                email_id,
+                res.confidence,
+                res.title,
+                res.evidence[:120],
+            )
+            return "inline_unmatched"
+        outcome = await _create_inline_job_post(api, res)
+        if outcome is None:
+            return "inline_failed"
+        await source.add_tags(email_id, ["caddy_processed"])
+        logger.info(
+            "  inline-post %s: %s @ %s  conf=%.2f",
+            outcome,
+            res.title,
+            res.company or "—",
+            res.confidence,
+        )
+        return f"inline_{outcome}"
+
     return "already_done"
 
 
@@ -208,6 +296,7 @@ async def run_once(limit: int, backend: str | None, days_back: int) -> None:
     classify_agent = get_classify_agent()
     refine_agent = get_refine_agent()
     followup_agent = get_followup_agent()
+    inline_post_agent = get_inline_post_agent()
     api = _api_client()
     deps = _caddy_deps()
 
@@ -215,7 +304,14 @@ async def run_once(limit: int, backend: str | None, days_back: int) -> None:
     for meta in pending:
         try:
             outcome = await _triage_one(
-                meta, source, classify_agent, refine_agent, followup_agent, api, deps
+                meta,
+                source,
+                classify_agent,
+                refine_agent,
+                followup_agent,
+                inline_post_agent,
+                api,
+                deps,
             )
         except Exception as exc:
             logger.exception("Triage raised for %s: %s", meta.id, exc)
