@@ -41,6 +41,7 @@ class JobPostCreate(BaseModel):
     remote_ok: bool = False
     link: str | None = None
     posted_date: str | None = None
+    source: str | None = None
 
 
 _APPLICATION_SORT_FIELDS = Literal[
@@ -232,6 +233,7 @@ async def create_job_post_minimal(
     title: str,
     link: str,
     description: str | None = None,
+    source: str = "email",
 ) -> str:
     """Create a job post with no company relationship.
 
@@ -239,8 +241,13 @@ async def create_job_post_minimal(
     the existing row (200) instead of a duplicate error. Use this for
     email-discovered postings where we don't have enough info to attach a
     company. Users can attach one later via the UI.
+
+    `source` rides through to JobPost.source AND the JobPostDiscovery
+    row the API auto-creates for the caller, so the post can be filtered
+    by provenance later. Defaults to "email" because this helper is the
+    email-ingest path.
     """
-    attrs: dict = {"title": title, "link": link}
+    attrs: dict = {"title": title, "link": link, "source": source}
     if description:
         attrs["description"] = description
     payload = {"data": {"type": "job-post", "attributes": attrs}}
@@ -270,8 +277,14 @@ async def create_job_post_with_company_check(
     company_industry: str | None = None,
     company_size: str | None = None,
     company_location: str | None = None,
+    source: str = "email",
 ) -> str:
-    """Create a job post, creating the company first if it doesn't exist."""
+    """Create a job post, creating the company first if it doesn't exist.
+
+    `source` defaults to "email" because cc_auto's primary caller is the
+    email-ingest pipeline; rides through to JobPost.source and the
+    JobPostDiscovery row the API auto-creates for the caller.
+    """
     job_url = url or link
     if not company_name:
         return json.dumps(
@@ -354,6 +367,7 @@ async def create_job_post_with_company_check(
             remote_ok=remote_ok,
             link=job_url,
             posted_date=posted_date,
+            source=source,
         )
         attributes = job_data.model_dump(exclude={"company_id"}, exclude_none=True)
         payload = {
