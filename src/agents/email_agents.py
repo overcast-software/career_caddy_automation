@@ -62,7 +62,7 @@ def get_classify_agent(model: str | None = None) -> Agent:
 class RefineResult(BaseModel):
     """Output schema for the stage-2 refiner."""
 
-    kind: Literal["new_post", "follow_up"]
+    kind: Literal["new_post", "follow_up", "direct_solicitation"]
     confidence: float = Field(ge=0.0, le=1.0)
     evidence: str = Field(description="One short sentence from the email supporting the choice.")
 
@@ -72,20 +72,31 @@ _REFINE_PROMPT = """You are refining emails that have already been flagged as jo
 You will be given a single email ID. Read it with
   read_email(email_id, classify=True, max_content_length=2000)
 
-Decide between two categories:
+Decide between three categories:
 
-- new_post: a link or description of a NEW job posting you could apply to.
-  Examples: a listing on LinkedIn/Indeed/company careers page; a recruiter
-  cold-emailing you about a role they want to submit you to; a job-board
-  digest that points at specific openings.
+- new_post: the email contains a link to a NEW job posting you could apply to.
+  Examples: a listing on LinkedIn/Indeed/company careers page; a job-board
+  digest that points at specific openings; a recruiter pasting an ATS link
+  to a role they want to submit you to. The defining trait is a SCRAPEABLE
+  URL pointing at a single job.
+
+- direct_solicitation: a job-related email that contains the role description
+  INLINE (responsibilities, qualifications, location, sometimes comp) but
+  NO scrapeable posting URL. Recruiter cold-outreach is the canonical
+  example: the recruiter pastes the JD into the body and asks you to reply
+  with your resume. No "Apply here" link, or only a generic
+  agency/company homepage. The body is rich enough to stand on its own
+  as a job post.
 
 - follow_up: correspondence about a role already in progress. Examples:
   "Thanks for applying — we'd like to schedule a phone screen", an interview
   reminder, a take-home assignment email, a rejection, an offer letter, a
   recruiter replying to your prior outreach.
 
-If the email contains BOTH a new posting and follow-up content, prefer
-new_post (the follow-up will be re-seen in the reply thread).
+If the email contains BOTH a new posting URL and an inline JD, prefer
+new_post (the URL is the more durable identifier). If it contains BOTH a
+new posting and follow-up content, prefer new_post (the follow-up will be
+re-seen in the reply thread).
 
 Return RefineResult. `evidence` must be a short quoted sentence from the
 email body. If you cannot decide confidently, set confidence < 0.6 — the
@@ -183,6 +194,89 @@ def get_followup_agent(model: str | None = None) -> Agent:
         system_prompt=_FOLLOWUP_PROMPT,
         model=model,
         output_type=FollowupResult,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Stage 4 — inline-post extractor: pull a JobPost out of a JD that lives
+# entirely in the email body (recruiter cold-outreach, no scrapeable URL).
+# ---------------------------------------------------------------------------
+
+
+class InlinePostResult(BaseModel):
+    """Structured fields extracted from an inline-JD email."""
+
+    title: str = Field(description="Role title. Empty string when not confidently inferable.")
+    company: str | None = Field(
+        default=None,
+        description=(
+            "Employer / agency name. Use the recruiter's company (signature, "
+            "sender domain) when no explicit hiring company is given. None "
+            "if not confidently inferable."
+        ),
+    )
+    description: str = Field(
+        description=(
+            "The inline JD verbatim or lightly cleaned (responsibilities, "
+            "qualifications, nice-to-haves, location, comp, recruiter contact). "
+            "Do NOT invent content. Strip unsubscribe footers and tracking pixels."
+        ),
+    )
+    location: str | None = Field(default=None)
+    salary_min: int | None = Field(default=None)
+    salary_max: int | None = Field(default=None)
+    remote_ok: bool = Field(default=False)
+    recruiter_contact: str | None = Field(
+        default=None,
+        description="Recruiter name + email/phone in one line, for the post's source attribution.",
+    )
+    confidence: float = Field(ge=0.0, le=1.0)
+    evidence: str = Field(
+        description="One short quoted sentence from the email confirming this is a real role.",
+    )
+
+
+_INLINE_POST_PROMPT = """You are processing an email that contains a job
+description INLINE — there is no scrapeable URL, only the role text in the
+body. Your job is to extract a faithful, structured JobPost.
+
+Read the email with
+  read_email(email_id, classify=True, max_content_length=4000)
+
+Extract the structured fields:
+
+- title: the role title (e.g. "Senior Software Engineer – Full Stack").
+  Pull from the email subject or the first heading-like line in the body.
+- company: the hiring company if explicit ("we're hiring at Acme…"); else
+  the recruiter's agency from the signature; else the sender domain.
+  If none of these are confident, return null — DO NOT invent.
+- description: the JD text verbatim or lightly cleaned. Keep responsibilities,
+  required/nice-to-have qualifications, location, comp range, recruiter
+  contact, and any notes about the engagement. STRIP unsubscribe footers,
+  tracking-pixel HTML, "click here to update preferences" boilerplate.
+- location, salary_min, salary_max, remote_ok: populate when the JD states
+  them. salary_min/max are integers (USD/year). remote_ok is true only when
+  the JD explicitly says remote/hybrid; otherwise false.
+- recruiter_contact: one-line "Name <email>" or "Name <email> | phone" from
+  the signature. Used for source attribution at the top of the description.
+
+Return InlinePostResult. `evidence` must be a short quoted sentence from
+the email confirming this is a real job (responsibilities/qualifications
+language). If the email turns out to be too thin to stand as a JobPost
+(generic teaser, "see our careers page"), set confidence < 0.6 and the
+caller will skip without creating a post.
+
+DO NOT invent details. Empty/null is always preferable to a guess.
+"""
+
+
+def get_inline_post_agent(model: str | None = None) -> Agent:
+    """Build the stage-4 inline-JD extractor."""
+    return get_agent(
+        "inline_post_extractor",
+        system_prompt=_INLINE_POST_PROMPT,
+        model=model,
+        output_type=InlinePostResult,
     )
 
 

@@ -396,6 +396,20 @@ def register_defaults() -> None:
         )
 
         register_agent(
+            "inline_post_extractor",
+            AgentConfig(
+                role="inline_post_extractor",
+                system_prompt=(
+                    "Extract a structured JobPost from an email whose JD is "
+                    "inline (no scrapeable URL). Recruiter cold-outreach is "
+                    "the canonical case."
+                ),
+                toolset_factories=[_email_mcp_factory],
+                history_processors=_common_history,
+            ),
+        )
+
+        register_agent(
             "followup_processor",
             AgentConfig(
                 role="followup_processor",
