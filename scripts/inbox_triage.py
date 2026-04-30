@@ -30,6 +30,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 
 from src.agents.email_agents import (
     FollowupResult,
@@ -39,6 +40,7 @@ from src.agents.email_agents import (
     get_inline_post_agent,
     get_refine_agent,
 )
+from src.agents.url_extractor import extract_job_urls
 from src.client.api_client import (
     ApiClient,
     create_job_post_minimal,
@@ -110,6 +112,94 @@ async def _run_followup(agent, email_id: str, deps: CareerCaddyDeps) -> Followup
 async def _run_inline_post(agent, email_id: str) -> InlinePostResult:
     result = await agent.run(f"Extract inline JobPost from email id: {email_id}")
     return result.output
+
+
+def _load_email_text(email_id: str) -> str:
+    """Plain-text body of an email via `notmuch show`. Mirrors process_tagged."""
+    result = subprocess.run(
+        ["notmuch", "show", "--format=text", "--body=true", f"id:{email_id}"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"notmuch show failed for {email_id}: {result.stderr.strip()}")
+    return result.stdout
+
+
+async def _create_posts_from_urls(api: ApiClient, urls) -> dict:
+    """Create a JobPost per extracted URL. NO scrape is created — the user
+    initiates scrapes from the UI on posts they want pulled.
+
+    Outcome per URL is read from the api response:
+      201 + new resource          → fresh create
+      200 + existing post resource → api dedupe hit (link or fingerprint).
+                                     `merge_empty_fields_from_attrs` ran on
+                                     the existing post; response carries the
+                                     post we mapped onto, including the
+                                     api-computed `canonical_link`.
+      4xx / non-success            → failed.
+    """
+    created: list[str] = []
+    duplicates: list[str] = []
+    failed: list[str] = []
+    for link in urls:
+        desc = link.description or None
+        try:
+            if link.company:
+                raw = await create_job_post_with_company_check(
+                    api,
+                    title=link.title,
+                    company_name=link.company,
+                    link=link.url,
+                    description=desc,
+                    source="email",
+                )
+            else:
+                raw = await create_job_post_minimal(
+                    api,
+                    title=link.title,
+                    link=link.url,
+                    description=desc,
+                )
+        except Exception as exc:
+            logger.warning("  job-post raised for %s: %s", link.url, exc)
+            failed.append(link.url)
+            continue
+
+        try:
+            resp = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            logger.warning("  unparseable response for %s: %s", link.url, exc)
+            failed.append(link.url)
+            continue
+
+        if not resp.get("success"):
+            logger.warning("  job-post failed for %s: %s", link.url, resp.get("error"))
+            failed.append(link.url)
+            continue
+
+        # JSON:API envelope: outer "data" wraps the inner resource at .data.data
+        post_resource = (resp.get("data") or {}).get("data") or {}
+        post_id = post_resource.get("id")
+        attrs = post_resource.get("attributes") or {}
+        canonical = attrs.get("canonical_link")
+        status_code = resp.get("status_code")
+
+        if status_code == 200:
+            duplicates.append(link.url)
+            logger.info(
+                "  job-post dup: %s  id=%s  canonical=%s  (%s)",
+                link.title, post_id, canonical, link.url,
+            )
+        else:
+            # 201 (fresh create) — or any other 2xx the api evolves to use.
+            created.append(link.url)
+            logger.info(
+                "  job-post: %s @ %s  id=%s  canonical=%s  (%s)",
+                link.title, link.company or "—", post_id, canonical, link.url,
+            )
+    return {"created": created, "duplicates": duplicates, "failed": failed}
 
 
 async def _create_inline_job_post(api: ApiClient, res: InlinePostResult) -> str | None:
@@ -231,8 +321,9 @@ async def _triage_one(
             refined.confidence,
             refined.evidence[:80],
         )
-        if not (is_followup or is_inline):
-            return "new_post"
+        # Fall through to stage 5 for the new_post case (kind="new_post" or
+        # low-confidence). The early-return that used to live here silently
+        # dropped every job-board notification with a scrapeable URL.
 
     # Stage 3 — follow-up processor (only if follow_up and not yet processed).
     if "follow_up" in tags and "caddy_processed" not in tags:
@@ -282,6 +373,48 @@ async def _triage_one(
             res.confidence,
         )
         return f"inline_{outcome}"
+
+    # Stage 5 — URL-extract → create JobPost(s) for the default new_post case
+    # (a job-board notification with one or more scrapeable URLs, neither a
+    # follow-up correspondence nor an inline-JD recruiter pitch). NO scrape is
+    # created — the user initiates a scrape from the UI on posts they want
+    # pulled. This stage was the missing piece between caddy-classify+caddy-
+    # process (legacy two-daemon flow) and caddy-inbox (orchestrator); the
+    # refiner correctly tagged emails `new_post` but nothing acted on it.
+    if (
+        "refined" in tags
+        and "follow_up" not in tags
+        and "inline_post" not in tags
+        and "caddy_processed" not in tags
+    ):
+        try:
+            text = _load_email_text(email_id)
+        except RuntimeError as exc:
+            logger.warning("  stage5: load_email_text failed for %s: %s", email_id, exc)
+            return "new_load_failed"
+        extracted = await extract_job_urls(text)
+        if not extracted.job_urls:
+            await source.add_tags(email_id, ["caddy_processed"])
+            logger.info(
+                "  stage5: no URLs extracted from %s (%s)",
+                email_id,
+                extracted.reasoning[:120],
+            )
+            return "new_no_urls"
+        outcome = await _create_posts_from_urls(api, extracted.job_urls)
+        if not outcome["failed"]:
+            await source.add_tags(email_id, ["caddy_processed"])
+        logger.info(
+            "  stage5: created=%d duplicates=%d failed=%d",
+            len(outcome["created"]),
+            len(outcome["duplicates"]),
+            len(outcome["failed"]),
+        )
+        if outcome["failed"]:
+            return "new_failed"
+        if outcome["created"]:
+            return "new_created"
+        return "new_duplicate"
 
     return "already_done"
 
