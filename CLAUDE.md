@@ -39,7 +39,7 @@ No test runner is configured — don't invent test commands.
 | `caddy-process` | `scripts.process_tagged:run` |
 | `caddy-orchestrator` | `src.agents.a2a_orchestrator:run` — A2A client/REPL (`--web` for UI) |
 | `caddy-gateway` | `mcp_servers.agents_gateway:main` — exposes sub-agents as MCP tools (default) or A2A services (`--mode a2a`) |
-| `caddy-login`, `caddy-poller`, `caddy-discover` | one-off browser utilities |
+| ~`caddy-login`/`caddy-poller`/`caddy-discover`~ | **removed** — canonical implementations live in the `career_caddy` parent at `agents/tools/{manual_login,discover_sites}.py` and `agents/pollers/hold_poller.py`. Use `make poller-local` or run them from `agents/`. |
 
 Most long-running pipelines support `--loop` and `--interval`.
 
@@ -50,6 +50,21 @@ Most long-running pipelines support `--loop` and `--interval`.
 ## Configuration
 
 `.env` is loaded via `python-dotenv`. Required: `CC_API_BASE_URL`, `CC_API_TOKEN`, and one LLM provider key (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`). `CC_MCP_URL` switches to MCP-SSE mode instead of direct API.
+
+### Self-hosting against your own Career Caddy domain
+
+cc_auto talks to Career Caddy entirely over HTTP — there are no Python imports
+across the repo boundary. To point this toolkit at your own Career Caddy
+instance, set the env var trio:
+
+```
+CC_API_BASE_URL=https://api.your-domain.com   # REST writes
+CC_MCP_URL=https://mcp.your-domain.com/mcp    # MCP reads
+CC_API_TOKEN=jh_...                           # API key from /admin/api-keys
+```
+
+No code changes. Acceptance test: `uv run caddy-inbox --once --limit 1`
+processes one email cleanly against the configured domain.
 
 Per-agent model overrides (resolved in `src/agents/agent_factory.py::get_model`): `CADDY_MODEL`, `EMAIL_CLASSIFIER_MODEL`, `JOB_EXTRACTOR_MODEL`, `PIPELINE_MODEL`, `BROWSER_SCRAPER_MODEL`, with `CADDY_DEFAULT_MODEL` as fallback and `openai:gpt-4o-mini` as the hard default.
 
@@ -86,7 +101,7 @@ These are spawned as `MCPServerStdio` subprocesses by the agent factory; they're
 
 ### Browser helpers — `lib/browser/`
 
-Shared helpers for the browser MCP server and the `caddy-login` / `caddy-poller` / `caddy-discover` scripts. `secrets.yml` (gitignored; see `secrets.yml.example`) holds login credentials for browser automation.
+Shared helpers for `mcp_servers/browser_server.py` and `src/agents/html_fetchers.py` (used by `analyze_screenshots`). `secrets.yml` (gitignored; see `secrets.yml.example`) holds login credentials for browser automation. The `caddy-login`/`caddy-poller`/`caddy-discover` entrypoints that used to live here are gone — use the canonical copies in the `career_caddy` parent's `agents/` submodule.
 
 ## Conventions worth knowing
 
