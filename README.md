@@ -25,39 +25,46 @@ cp .env.example .env
 # Edit .env: set CC_API_BASE_URL, CC_API_TOKEN, OPENAI_API_KEY
 
 # 3. Run
-uv run caddy-web                    # web UI with Career Caddy tools
-uv run caddy-url https://...        # scrape a job URL → Career Caddy
-uv run caddy-email                  # email pipeline (requires notmuch)
-uv run caddy-classify               # classify emails (requires notmuch)
+uv run caddy-inbox --loop --interval 15  # three-stage email triage (recommended)
+uv run caddy-url https://...             # scrape a job URL → Career Caddy
+uv run caddy-web                         # web UI with Career Caddy tools
 ```
 
-## Connection modes
+## Self-hosting against your own Career Caddy domain
 
-### Direct API (default)
-Set `CC_API_BASE_URL` and `CC_API_TOKEN` in `.env`. The toolkit makes HTTP requests directly to the Career Caddy JSON:API endpoints.
+cc_auto talks to Career Caddy entirely over HTTP — there are no Python imports across the repo boundary. To point this toolkit at your own Career Caddy instance, set the env-var trio in `.env`:
 
 ```
-CC_API_BASE_URL=https://api.careercaddy.online
-CC_API_TOKEN=jh_xxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+CC_API_BASE_URL=https://api.your-domain.com    # REST writes
+CC_MCP_URL=https://mcp.your-domain.com/mcp     # MCP reads
+CC_API_TOKEN=jh_...                            # API key from /admin/api-keys
 ```
 
-### MCP SSE (public endpoint)
-Connect to `mcp.careercaddy.online` for tool access via the MCP protocol:
+No code changes. Acceptance test:
 
 ```bash
-uv run caddy-web --mcp https://mcp.careercaddy.online/mcp
+uv run caddy-inbox --once --limit 1            # processes one email cleanly
 ```
 
 ## Entry points
 
 | Command | Description |
 |---------|-------------|
-| `caddy-web` | Web UI — pydantic-ai `to_web()` with Career Caddy tools |
+| `caddy-inbox` | **Recommended.** Three-stage email triage daemon (classify → refine → follow-up). |
 | `caddy-url <url>` | Scrape one job URL → extract → post to Career Caddy |
 | `caddy-email` | Full pipeline: email search → scrape → post |
-| `caddy-classify` | Classify and tag emails (notmuch) |
+| `caddy-web` | Web UI — pydantic-ai `to_web()` with Career Caddy tools |
+| `caddy-gateway` | MCP/A2A gateway exposing sub-agents on `:3003` (MCP) or `:3010-3012` (A2A) |
+| `caddy-orchestrator` | A2A client/REPL that talks to the gateway |
+| `caddy-process` / `caddy-classify` | Legacy email scripts (subsumed by `caddy-inbox` — see warning below) |
+| `caddy-score` | Score job posts |
+| `caddy-analyze-screenshots` | Debug helper for failed scrapes |
 
-All commands support `--loop` and `--interval` for continuous operation.
+> **Don't run `caddy-classify` and `caddy-process` alongside `caddy-inbox` against the same mailbox** — they race on the same notmuch tags.
+
+Most long-running commands support `--loop` and `--interval`.
+
+The browser-side scripts (`caddy-poller`, `caddy-login`, `caddy-discover`) used to live here; they're now in the [`career_caddy_agents`](https://github.com/overcast-software/career_caddy_agents) submodule of the parent repo. Run them via `make poller-local` (parent) or directly from the agents repo.
 
 ## Optional dependencies
 
@@ -100,12 +107,17 @@ career_caddy_automation/
 │       ├── url_to_caddy.py  # Scrape URL → post
 │       ├── email_to_caddy.py # Email → scrape → post
 │       └── web_ui.py        # pydantic-ai to_web() interface
-├── mcp_servers/            # Local MCP servers (optional)
+├── mcp_servers/            # Local MCP servers
 │   ├── email_server.py     # notmuch email integration
-│   └── browser_server.py   # Camoufox browser automation
+│   ├── browser_server.py   # Camoufox browser automation (used by html_fetchers + agent factory)
+│   └── agents_gateway.py   # A2A / MCP gateway exposing sub-agents
 ├── lib/browser/            # Browser automation helpers
 ├── scripts/
-│   └── tag_emails.py       # Email classification daemon
+│   ├── inbox_triage.py     # Three-stage email triage daemon (caddy-inbox)
+│   ├── tag_emails.py       # Legacy classify daemon
+│   ├── process_tagged.py   # Legacy follow-up processor
+│   ├── score_posts.py      # Job scoring
+│   └── analyze_screenshots.py  # Debug helper for failed scrapes
 ├── pyproject.toml
 ├── .env.example
 └── secrets.yml.example     # Browser login credentials (optional)
