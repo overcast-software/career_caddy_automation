@@ -80,3 +80,56 @@ class NotmuchSource:
             check=True,
             timeout=10,
         )
+
+    @staticmethod
+    def _date_scoped(query: str, days_back: int) -> str:
+        end = datetime.now()
+        start = end - timedelta(days=days_back)
+        date_range = f"date:{start.strftime('%Y-%m-%d')}..{end.strftime('%Y-%m-%d')}"
+        return f"({query}) AND {date_range}"
+
+    async def count_by_query(self, query: str, days_back: int = 14) -> int:
+        """Return thread count for an arbitrary notmuch query, scoped to
+        the same date window list_pending uses. Powers --status."""
+        scoped = self._date_scoped(query, days_back)
+        result = subprocess.run(
+            ["notmuch", "count", "--output=threads", scoped],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"notmuch count failed: {result.stderr.strip()}")
+        return int((result.stdout or "0").strip() or 0)
+
+    async def list_by_query(
+        self, query: str, limit: int = 20, days_back: int = 14
+    ) -> list[EmailMeta]:
+        """List EmailMetas matching an arbitrary query within the date
+        window. Used by --show <state>."""
+        scoped = self._date_scoped(query, days_back)
+        result = subprocess.run(
+            ["notmuch", "search", "--format=json", f"--limit={limit}", scoped],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"notmuch search failed: {result.stderr.strip()}")
+        threads = json.loads(result.stdout) if result.stdout.strip() else []
+        out: list[EmailMeta] = []
+        for thread in threads:
+            query_arr = thread.get("query") or []
+            if not query_arr or not query_arr[0]:
+                continue
+            raw_id = query_arr[0]
+            if raw_id.startswith("id:"):
+                raw_id = raw_id[3:]
+            out.append(
+                EmailMeta(
+                    id=raw_id,
+                    subject=_decode_subject(thread.get("subject") or ""),
+                    tags=set(thread.get("tags") or []),
+                )
+            )
+        return out

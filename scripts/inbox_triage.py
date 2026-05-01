@@ -127,7 +127,9 @@ def _load_email_text(email_id: str) -> str:
     return result.stdout
 
 
-async def _create_posts_from_urls(api: ApiClient, urls) -> dict:
+async def _create_posts_from_urls(
+    api: ApiClient, urls, created_acc: list[dict] | None = None
+) -> dict:
     """Create a JobPost per extracted URL. NO scrape is created — the user
     initiates scrapes from the UI on posts they want pulled.
 
@@ -199,10 +201,22 @@ async def _create_posts_from_urls(api: ApiClient, urls) -> dict:
                 "  job-post: %s @ %s  id=%s  canonical=%s  (%s)",
                 link.title, link.company or "—", post_id, canonical, link.url,
             )
+            if created_acc is not None and post_id is not None:
+                created_acc.append({
+                    "id": post_id,
+                    "title": link.title or "(untitled)",
+                    "company": link.company or "—",
+                    "link": canonical or link.url,
+                    "source": "email_url",
+                })
     return {"created": created, "duplicates": duplicates, "failed": failed}
 
 
-async def _create_inline_job_post(api: ApiClient, res: InlinePostResult) -> str | None:
+async def _create_inline_job_post(
+    api: ApiClient,
+    res: InlinePostResult,
+    created_acc: list[dict] | None = None,
+) -> str | None:
     """POST a JobPost from an inline-JD email. Returns "created", "duplicate",
     or None on failure. link is null; source is "email_direct"."""
     description = res.description
@@ -240,6 +254,17 @@ async def _create_inline_job_post(api: ApiClient, res: InlinePostResult) -> str 
     if not resp.get("success"):
         logger.warning("  inline job-post failed: %s", resp.get("error"))
         return None
+    if created_acc is not None:
+        post_resource = (resp.get("data") or {}).get("data") or {}
+        post_id = post_resource.get("id")
+        if post_id is not None:
+            created_acc.append({
+                "id": post_id,
+                "title": res.title or "(untitled)",
+                "company": res.company or "—",
+                "link": None,
+                "source": "email_direct",
+            })
     return "created"
 
 
@@ -284,139 +309,177 @@ async def _triage_one(
     inline_post_agent,
     api: ApiClient,
     deps: CareerCaddyDeps,
+    created_acc: list[dict] | None = None,
 ) -> str:
     """Drive a single email through whichever stages it still needs. Returns
-    a short status string for the summary counter."""
+    a short status string for the summary counter.
+
+    Logs a per-email outcome line in `finally` so every email — even the
+    ones that fall through to "already_done" — produces one line that
+    maps email_id → outcome → tags-added. Without it, the run summary
+    "Done: already_done=2" reads as silence: you can't tell which email
+    got the [FUP] tag this pass vs. which was a passive scan of an
+    already-tagged thread.
+    """
     email_id = meta.id
-    tags = set(meta.tags)
+    initial_tags = set(meta.tags)
+    tags = set(initial_tags)
+    final_outcome = "already_done"
+    try:
+        # Stage 1 — classify (only if not yet evaluated).
+        if "evaluated" not in tags:
+            is_job = await _run_classify(classify_agent, email_id)
+            new_tags = ["evaluated"] + (["job_post"] if is_job else [])
+            await source.add_tags(email_id, new_tags)
+            tags.update(new_tags)
+            logger.info("[%s] %s  %s", "JOB" if is_job else "---", email_id, meta.subject)
+            if not is_job:
+                final_outcome = "not_job"
+                return final_outcome
 
-    # Stage 1 — classify (only if not yet evaluated).
-    if "evaluated" not in tags:
-        is_job = await _run_classify(classify_agent, email_id)
-        new_tags = ["evaluated"] + (["job_post"] if is_job else [])
-        await source.add_tags(email_id, new_tags)
-        tags.update(new_tags)
-        logger.info("[%s] %s  %s", "JOB" if is_job else "---", email_id, meta.subject)
-        if not is_job:
-            return "not_job"
-
-    # Stage 2 — refine (only job-related, only if not yet refined).
-    if "job_post" in tags and "refined" not in tags:
-        refined = await _run_refine(refine_agent, email_id)
-        new_tags = ["refined"]
-        confident = refined.confidence >= CONFIDENCE_FLOOR
-        is_followup = refined.kind == "follow_up" and confident
-        is_inline = refined.kind == "direct_solicitation" and confident
-        if is_followup:
-            new_tags.append("follow_up")
-        if is_inline:
-            new_tags.append("inline_post")
-        await source.add_tags(email_id, new_tags)
-        tags.update(new_tags)
-        prefix = "FUP" if is_followup else ("DIR" if is_inline else "NEW")
-        logger.info(
-            "[%s] %s  conf=%.2f  %s",
-            prefix,
-            email_id,
-            refined.confidence,
-            refined.evidence[:80],
-        )
-        # Fall through to stage 5 for the new_post case (kind="new_post" or
-        # low-confidence). The early-return that used to live here silently
-        # dropped every job-board notification with a scrapeable URL.
-
-    # Stage 3 — follow-up processor (only if follow_up and not yet processed).
-    if "follow_up" in tags and "caddy_processed" not in tags:
-        res = await _run_followup(followup_agent, email_id, deps)
-        if (
-            res.application_id is not None
-            and res.new_status is not None
-            and res.confidence >= CONFIDENCE_FLOOR
-        ):
-            ok = await _apply_status_update(api, res)
-            if ok:
-                await source.add_tags(email_id, ["caddy_processed"])
-                return "processed"
-            return "update_failed"
-        logger.info(
-            "  no confident application match for %s (conf=%.2f): %s",
-            email_id,
-            res.confidence,
-            res.notes[:120],
-        )
-        return "unmatched"
-
-    # Stage 4 — inline-post extractor (direct-solicitation emails: JD inline,
-    # no scrapeable URL). Creates a JobPost with link=NULL and
-    # source="email_direct" so the post is distinguishable from URL-scraped
-    # email-sourced posts.
-    if "inline_post" in tags and "caddy_processed" not in tags:
-        res = await _run_inline_post(inline_post_agent, email_id)
-        if not res.title or res.confidence < CONFIDENCE_FLOOR:
+        # Stage 2 — refine (only job-related, only if not yet refined).
+        if "job_post" in tags and "refined" not in tags:
+            refined = await _run_refine(refine_agent, email_id)
+            new_tags = ["refined"]
+            confident = refined.confidence >= CONFIDENCE_FLOOR
+            is_followup = refined.kind == "follow_up" and confident
+            is_inline = refined.kind == "direct_solicitation" and confident
+            if is_followup:
+                new_tags.append("follow_up")
+            if is_inline:
+                new_tags.append("inline_post")
+            await source.add_tags(email_id, new_tags)
+            tags.update(new_tags)
+            prefix = "FUP" if is_followup else ("DIR" if is_inline else "NEW")
             logger.info(
-                "  inline-post low confidence for %s (conf=%.2f, title=%r): %s",
+                "[%s] %s  conf=%.2f  %s",
+                prefix,
+                email_id,
+                refined.confidence,
+                refined.evidence[:80],
+            )
+            # Fall through to stage 5 for the new_post case (kind="new_post" or
+            # low-confidence). The early-return that used to live here silently
+            # dropped every job-board notification with a scrapeable URL.
+
+        # Stage 3 — follow-up processor (only if follow_up and not yet processed).
+        if "follow_up" in tags and "caddy_processed" not in tags:
+            res = await _run_followup(followup_agent, email_id, deps)
+            if (
+                res.application_id is not None
+                and res.new_status is not None
+                and res.confidence >= CONFIDENCE_FLOOR
+            ):
+                ok = await _apply_status_update(api, res)
+                if ok:
+                    await source.add_tags(email_id, ["caddy_processed"])
+                    tags.add("caddy_processed")
+                    final_outcome = "processed"
+                    return final_outcome
+                final_outcome = "update_failed"
+                return final_outcome
+            logger.info(
+                "  no confident application match for %s (conf=%.2f): %s",
                 email_id,
                 res.confidence,
-                res.title,
-                res.evidence[:120],
+                res.notes[:120],
             )
-            return "inline_unmatched"
-        outcome = await _create_inline_job_post(api, res)
-        if outcome is None:
-            return "inline_failed"
-        await source.add_tags(email_id, ["caddy_processed"])
-        logger.info(
-            "  inline-post %s: %s @ %s  conf=%.2f",
-            outcome,
-            res.title,
-            res.company or "—",
-            res.confidence,
-        )
-        return f"inline_{outcome}"
+            final_outcome = "unmatched"
+            return final_outcome
 
-    # Stage 5 — URL-extract → create JobPost(s) for the default new_post case
-    # (a job-board notification with one or more scrapeable URLs, neither a
-    # follow-up correspondence nor an inline-JD recruiter pitch). NO scrape is
-    # created — the user initiates a scrape from the UI on posts they want
-    # pulled. This stage was the missing piece between caddy-classify+caddy-
-    # process (legacy two-daemon flow) and caddy-inbox (orchestrator); the
-    # refiner correctly tagged emails `new_post` but nothing acted on it.
-    if (
-        "refined" in tags
-        and "follow_up" not in tags
-        and "inline_post" not in tags
-        and "caddy_processed" not in tags
-    ):
-        try:
-            text = _load_email_text(email_id)
-        except RuntimeError as exc:
-            logger.warning("  stage5: load_email_text failed for %s: %s", email_id, exc)
-            return "new_load_failed"
-        extracted = await extract_job_urls(text)
-        if not extracted.job_urls:
+        # Stage 4 — inline-post extractor (direct-solicitation emails: JD inline,
+        # no scrapeable URL). Creates a JobPost with link=NULL and
+        # source="email_direct" so the post is distinguishable from URL-scraped
+        # email-sourced posts.
+        if "inline_post" in tags and "caddy_processed" not in tags:
+            res = await _run_inline_post(inline_post_agent, email_id)
+            if not res.title or res.confidence < CONFIDENCE_FLOOR:
+                logger.info(
+                    "  inline-post low confidence for %s (conf=%.2f, title=%r): %s",
+                    email_id,
+                    res.confidence,
+                    res.title,
+                    res.evidence[:120],
+                )
+                final_outcome = "inline_unmatched"
+                return final_outcome
+            inline_outcome = await _create_inline_job_post(api, res, created_acc)
+            if inline_outcome is None:
+                final_outcome = "inline_failed"
+                return final_outcome
             await source.add_tags(email_id, ["caddy_processed"])
+            tags.add("caddy_processed")
             logger.info(
-                "  stage5: no URLs extracted from %s (%s)",
-                email_id,
-                extracted.reasoning[:120],
+                "  inline-post %s: %s @ %s  conf=%.2f",
+                inline_outcome,
+                res.title,
+                res.company or "—",
+                res.confidence,
             )
-            return "new_no_urls"
-        outcome = await _create_posts_from_urls(api, extracted.job_urls)
-        if not outcome["failed"]:
-            await source.add_tags(email_id, ["caddy_processed"])
-        logger.info(
-            "  stage5: created=%d duplicates=%d failed=%d",
-            len(outcome["created"]),
-            len(outcome["duplicates"]),
-            len(outcome["failed"]),
-        )
-        if outcome["failed"]:
-            return "new_failed"
-        if outcome["created"]:
-            return "new_created"
-        return "new_duplicate"
+            final_outcome = f"inline_{inline_outcome}"
+            return final_outcome
 
-    return "already_done"
+        # Stage 5 — URL-extract → create JobPost(s) for the default new_post case
+        # (a job-board notification with one or more scrapeable URLs, neither a
+        # follow-up correspondence nor an inline-JD recruiter pitch). NO scrape is
+        # created — the user initiates a scrape from the UI on posts they want
+        # pulled. This stage was the missing piece between caddy-classify+caddy-
+        # process (legacy two-daemon flow) and caddy-inbox (orchestrator); the
+        # refiner correctly tagged emails `new_post` but nothing acted on it.
+        if (
+            "refined" in tags
+            and "follow_up" not in tags
+            and "inline_post" not in tags
+            and "caddy_processed" not in tags
+        ):
+            try:
+                text = _load_email_text(email_id)
+            except RuntimeError as exc:
+                logger.warning("  stage5: load_email_text failed for %s: %s", email_id, exc)
+                final_outcome = "new_load_failed"
+                return final_outcome
+            extracted = await extract_job_urls(text)
+            if not extracted.job_urls:
+                await source.add_tags(email_id, ["caddy_processed"])
+                tags.add("caddy_processed")
+                logger.info(
+                    "  stage5: no URLs extracted from %s (%s)",
+                    email_id,
+                    extracted.reasoning[:120],
+                )
+                final_outcome = "new_no_urls"
+                return final_outcome
+            url_outcome = await _create_posts_from_urls(api, extracted.job_urls, created_acc)
+            if not url_outcome["failed"]:
+                await source.add_tags(email_id, ["caddy_processed"])
+                tags.add("caddy_processed")
+            logger.info(
+                "  stage5: created=%d duplicates=%d failed=%d",
+                len(url_outcome["created"]),
+                len(url_outcome["duplicates"]),
+                len(url_outcome["failed"]),
+            )
+            if url_outcome["failed"]:
+                final_outcome = "new_failed"
+                return final_outcome
+            if url_outcome["created"]:
+                final_outcome = "new_created"
+                return final_outcome
+            final_outcome = "new_duplicate"
+            return final_outcome
+
+        final_outcome = "already_done"
+        return final_outcome
+    finally:
+        added = sorted(tags - initial_tags)
+        diff = ",".join(added) if added else "—"
+        logger.info(
+            "  → %-18s %s  added=[%s]  %s",
+            final_outcome,
+            email_id,
+            diff,
+            (meta.subject or "(no subject)")[:70],
+        )
 
 
 async def run_once(limit: int, backend: str | None, days_back: int) -> None:
@@ -434,6 +497,7 @@ async def run_once(limit: int, backend: str | None, days_back: int) -> None:
     deps = _caddy_deps()
 
     counters: dict[str, int] = {}
+    created_acc: list[dict] = []
     for meta in pending:
         try:
             outcome = await _triage_one(
@@ -445,6 +509,7 @@ async def run_once(limit: int, backend: str | None, days_back: int) -> None:
                 inline_post_agent,
                 api,
                 deps,
+                created_acc=created_acc,
             )
         except Exception as exc:
             logger.exception("Triage raised for %s: %s", meta.id, exc)
@@ -453,6 +518,62 @@ async def run_once(limit: int, backend: str | None, days_back: int) -> None:
 
     summary = ", ".join(f"{k}={v}" for k, v in sorted(counters.items()))
     logger.info("Done: %s", summary)
+    if created_acc:
+        logger.info("Created %d JobPost(s) this pass:", len(created_acc))
+        for post in created_acc:
+            logger.info(
+                "  jp #%s [%s]  %s @ %s  %s",
+                post["id"],
+                post["source"],
+                post["title"][:60],
+                post["company"],
+                post["link"] or "(no link)",
+            )
+
+
+# State queries used by --status. Same date scope as list_pending so
+# counts line up with what the daemon would see on a normal pass.
+STATE_QUERIES: dict[str, str] = {
+    "unevaluated":             "not tag:evaluated",
+    "evaluated_not_job":       "tag:evaluated and not tag:job_post",
+    "job_post_pending_refine": "tag:job_post and not tag:refined",
+    "refined_follow_up":       "tag:follow_up and not tag:caddy_processed",
+    "refined_inline_post":     "tag:inline_post and not tag:caddy_processed",
+    "refined_new_post":        "tag:refined and not tag:follow_up and not tag:inline_post and not tag:caddy_processed",
+    "caddy_processed":         "tag:caddy_processed",
+}
+
+
+async def print_status(backend: str | None, days_back: int, show: str | None, show_limit: int) -> None:
+    """Tag-state breakdown of the mailbox so the user can see where
+    pending work is stuck without watching live logs. `--show <state>`
+    dumps the matching email subjects/ids."""
+    source = make_source(backend)
+    if not hasattr(source, "count_by_query"):
+        raise RuntimeError(
+            f"--status not supported for backend {type(source).__name__}; "
+            "only NotmuchSource implements count_by_query so far."
+        )
+
+    if show is not None:
+        if show not in STATE_QUERIES:
+            valid = ", ".join(STATE_QUERIES.keys())
+            raise SystemExit(f"--show: unknown state {show!r}. Valid: {valid}")
+        metas = await source.list_by_query(
+            STATE_QUERIES[show], limit=show_limit, days_back=days_back
+        )
+        logger.info("=== %s (showing %d, last %d days) ===", show, len(metas), days_back)
+        for m in metas:
+            tag_str = ",".join(sorted(m.tags)) or "(none)"
+            logger.info("  %s  [%s]  %s", m.id, tag_str, (m.subject or "")[:80])
+        return
+
+    logger.info("=== Pipeline state (last %d days) ===", days_back)
+    width = max(len(k) for k in STATE_QUERIES)
+    for state, query in STATE_QUERIES.items():
+        n = await source.count_by_query(query, days_back=days_back)
+        logger.info("  %-*s : %4d", width, state, n)
+    logger.info("(use --show <state> to list matching emails)")
 
 
 async def main() -> None:
@@ -489,7 +610,37 @@ async def main() -> None:
         default=None,
         help="Override CADDY_EMAIL_BACKEND for this run.",
     )
+    parser.add_argument(
+        "--status",
+        action="store_true",
+        help=(
+            "Print a tag-state breakdown of the mailbox and exit. Use to "
+            "find emails stuck mid-pipeline (e.g., 'evaluated_not_job' = "
+            "candidates the classifier rejected; 'refined_follow_up' = "
+            "follow-ups not yet matched to an application)."
+        ),
+    )
+    parser.add_argument(
+        "--show",
+        type=str,
+        default=None,
+        metavar="STATE",
+        help=(
+            "With --status: list the matching email ids/subjects for the "
+            "named state (one of: " + ", ".join(STATE_QUERIES.keys()) + ")."
+        ),
+    )
+    parser.add_argument(
+        "--show-limit",
+        type=int,
+        default=20,
+        help="Max emails listed by --show (default: 20).",
+    )
     args = parser.parse_args()
+
+    if args.status or args.show is not None:
+        await print_status(args.backend, args.days_back, args.show, args.show_limit)
+        return
 
     if args.loop:
         logger.info("Loop mode: every %d min.", args.interval)
