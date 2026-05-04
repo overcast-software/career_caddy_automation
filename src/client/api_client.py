@@ -513,16 +513,35 @@ async def create_job_application(
 
 async def get_job_applications(
     api: ApiClient,
-    id: int | None = None,
+    id: PositiveInt | None = None,
+    company: str | None = None,
+    company_id: PositiveInt | None = None,
+    status: str | None = None,
+    query: str | None = None,
     sort: _APPLICATION_SORT_FIELDS | None = None,
     order: Literal["asc", "desc"] | None = None,
     page: int | None = None,
     per_page: int | None = None,
 ) -> str:
-    """Fetch job applications. Pass id for a single application; omit for a list."""
+    """Fetch job applications. Pass id for a single application; omit for a list.
+
+    Filters (all optional, combinable):
+      company    — case-insensitive substring of company name (e.g. "starbucks")
+      company_id — exact company FK (use when you already resolved it)
+      status     — case-insensitive substring of status (e.g. "rejected")
+      query      — broad text match across title/company/status/notes
+    """
     if id is not None:
         return await api.get(f"/api/v1/job-applications/{id}/")
-    params = {}
+    params: dict = {}
+    if company is not None:
+        params["filter[company]"] = company
+    if company_id is not None:
+        params["filter[company_id]"] = company_id
+    if status is not None:
+        params["filter[status]"] = status
+    if query is not None:
+        params["filter[query]"] = query
     if sort is not None:
         params["sort"] = sort
     if order is not None:

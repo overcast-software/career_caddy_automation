@@ -170,9 +170,13 @@ Mapping strategies, in order. Stop at the first confident match:
 2. Thread peers — search emails in the same thread (list_emails /
    search_email by subject or message-id) that were previously tagged
    'job_post' or 'follow_up'; if one maps to an application, reuse it.
-3. Company + role — call get_job_applications and filter by the company
-   inferred from the sender domain or signature. Only use if exactly one
-   recent application matches.
+3. Company + role — call get_job_applications WITH the `company=`
+   parameter set to the company name inferred from the sender domain or
+   signature (e.g. company="starbucks"). Calling get_job_applications
+   without `company=` (or `company_id=`) is FORBIDDEN in this stage —
+   listing every application and picking one is a known failure mode.
+   Only return a match if exactly one recent application is returned;
+   otherwise skip with confidence < 0.6.
 
 Map the email's content to one of these statuses (exact strings):
   Applied, Interview Scheduled, Technical Test, Awaiting Decision,
