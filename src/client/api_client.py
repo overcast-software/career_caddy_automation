@@ -17,7 +17,7 @@ from urllib.parse import urljoin
 
 from typing import Optional
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PositiveInt
 
 # ---------------------------------------------------------------------------
 # Models
@@ -434,7 +434,7 @@ async def get_job_posts(
 
 async def update_job_post(
     api: ApiClient,
-    job_post_id: int,
+    job_post_id: PositiveInt,
     title: str | None = None,
     description: str | None = None,
     location: str | None = None,
@@ -489,21 +489,12 @@ async def update_job_post(
 
 async def create_job_application(
     api: ApiClient,
-    job_post_id: int,
+    job_post_id: PositiveInt,
     status: str = "applied",
     notes: str | None = None,
     applied_at: str | None = None,
 ) -> str:
     """Create a new job application linked to an existing job post."""
-    if job_post_id <= 0:
-        return json.dumps(
-            APIResponse(
-                success=False,
-                error=f"Invalid job_post_id={job_post_id}. Look up the real ID first.",
-            ).model_dump(),
-            indent=2,
-        )
-
     attributes: dict = {"status": status}
     if notes is not None:
         attributes["notes"] = notes
@@ -543,14 +534,14 @@ async def get_job_applications(
     return await api.get("/api/v1/job-applications/", params=params)
 
 
-async def get_applications_for_job_post(api: ApiClient, job_post_id: int) -> str:
+async def get_applications_for_job_post(api: ApiClient, job_post_id: PositiveInt) -> str:
     """Fetch all job applications linked to a specific job post."""
     return await api.get(f"/api/v1/job-posts/{job_post_id}/job-applications/")
 
 
 async def update_job_application(
     api: ApiClient,
-    application_id: int,
+    application_id: PositiveInt,
     status: str | None = None,
     notes: str | None = None,
     applied_at: str | None = None,
@@ -662,7 +653,7 @@ async def get_scrapes(
 
 async def update_scrape(
     api: ApiClient,
-    scrape_id: int,
+    scrape_id: PositiveInt,
     status: str | None = None,
     job_content: str | None = None,
     url: str | None = None,
@@ -738,7 +729,7 @@ async def get_answers(
     return await api.get("/api/v1/answers/", params=params)
 
 
-async def score_job_post(api: ApiClient, job_post_id: int) -> str:
+async def score_job_post(api: ApiClient, job_post_id: PositiveInt) -> str:
     """Score a job post against the user's career data."""
     payload = {
         "data": {
