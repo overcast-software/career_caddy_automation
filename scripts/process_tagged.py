@@ -33,6 +33,7 @@ import os
 import subprocess
 from datetime import datetime
 
+from src.agents.span_validator import filter_span_atomic
 from src.agents.url_extractor import extract_job_urls
 from src.client.api_client import (
     ApiClient,
@@ -160,6 +161,15 @@ async def process_single_email(email_id: str, api: ApiClient) -> dict:
     try:
         text = load_email_text(email_id)
         extracted = await extract_job_urls(text)
+        before_span = len(extracted.job_urls)
+        extracted.job_urls = filter_span_atomic(
+            extracted.job_urls, text, email_id=email_id,
+        )
+        if len(extracted.job_urls) != before_span:
+            logger.info(
+                "  span_validator dropped %d/%d url(s) (cross-row hallucination guard)",
+                before_span - len(extracted.job_urls), before_span,
+            )
         logger.info("  extractor kept %d url(s): %s", len(extracted.job_urls), extracted.reasoning)
 
         created: list[str] = []
