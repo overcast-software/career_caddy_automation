@@ -15,7 +15,6 @@ import json
 from typing import Literal
 from urllib.parse import urljoin
 
-from typing import Optional
 import httpx
 from pydantic import BaseModel, Field, PositiveInt
 
@@ -282,14 +281,14 @@ async def create_job_post_with_company_check(
     salary_max: int | None = None,
     employment_type: str | None = None,
     remote_ok: bool = False,
-    url: Optional[str] = None,
-    link: Optional[str] = None,
-    posted_date: Optional[str] = None,
-    company_description: Optional[str] = None,
-    company_website: Optional[str] = None,
-    company_industry: Optional[str] = None,
-    company_size: Optional[str] = None,
-    company_location: Optional[str] = None,
+    url: str | None = None,
+    link: str | None = None,
+    posted_date: str | None = None,
+    company_description: str | None = None,
+    company_website: str | None = None,
+    company_industry: str | None = None,
+    company_size: str | None = None,
+    company_location: str | None = None,
     source: str = "chat",
 ) -> str:
     """Create a job post, creating the company first if it doesn't exist.
