@@ -229,6 +229,16 @@ async def get_companies(api: ApiClient, id: int | None = None) -> str:
     return await api.get("/api/v1/companies/")
 
 
+# Email-tier sources cc_auto declares as incomplete on create (Posture E).
+# These rows ship to the api as title + company + link only, with no real
+# description; flagging complete=False up front routes them through the
+# existing incomplete-recovery pipeline instead of pretending they're
+# fully fleshed-out. The api gates inbound complete=False on the same
+# trust threshold, so this is a synced contract — keep the two lists in
+# step with api/job_hunting/models/job_post_dedupe.py SOURCE_TRUST.
+_EMAIL_TIER_SOURCES = frozenset({"email", "email_direct"})
+
+
 async def create_job_post_minimal(
     api: ApiClient,
     title: str,
@@ -251,6 +261,8 @@ async def create_job_post_minimal(
     attrs: dict = {"title": title, "link": link, "source": source}
     if description:
         attrs["description"] = description
+    if source in _EMAIL_TIER_SOURCES:
+        attrs["complete"] = False
     payload = {"data": {"type": "job-post", "attributes": attrs}}
     return await api.post("/api/v1/job-posts/", payload)
 
@@ -364,6 +376,8 @@ async def create_job_post_with_company_check(
         # Tag provenance so the backend sankey can attribute this post
         # to the code path that created it (chat agent, email pipeline, ...).
         attributes["source"] = source
+        if source in _EMAIL_TIER_SOURCES:
+            attributes["complete"] = False
         payload = {
             "data": {
                 "type": "job-post",
