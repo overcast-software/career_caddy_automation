@@ -1,0 +1,12 @@
+From: alert@indeed.com
+Subject: New job: Backend Engineer
+Date: Thu, 8 May 2026 12:30:00 -0700
+
+A new job matches your saved alert.
+
+Backend Engineer
+Solo Co · Remote
+Build and maintain our distributed services platform.
+View this job: https://www.indeed.com/viewjob?jk=abc123solo
+
+Manage your alerts in Indeed settings.

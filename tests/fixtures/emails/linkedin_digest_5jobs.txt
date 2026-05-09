@@ -1,0 +1,46 @@
+From: jobs-noreply@linkedin.com
+Subject: 5 new jobs match your "Backend Engineer" alert
+Date: Thu, 8 May 2026 09:00:00 -0700
+
+Your job alert from LinkedIn
+
+We found 5 jobs matching your criteria.
+
+----
+
+Senior Backend Engineer
+Acme Inc · San Francisco, CA · 3 days ago
+Lead our backend platform team. Python, Postgres, Kubernetes. $200K-$260K.
+View job: https://www.linkedin.com/jobs/view/100001
+
+----
+
+Frontend Lead
+Beta Labs · Remote · 1 week ago
+Own our React app and design system. TypeScript, Ember.js a plus.
+View job: https://www.linkedin.com/jobs/view/100002
+
+----
+
+Staff DevOps Engineer
+Gamma Cloud · New York, NY · 2 weeks ago
+SRE leadership for our managed-services tier. Terraform, AWS.
+View job: https://www.linkedin.com/jobs/view/100003
+
+----
+
+Engineering Manager
+Delta Systems · Austin, TX · 4 days ago
+Lead a 6-person platform team building developer tooling.
+View job: https://www.linkedin.com/jobs/view/100004
+
+----
+
+Site Reliability Engineer
+Epsilon Networks · Remote · 2 days ago
+On-call rotation, incident response, observability tooling.
+View job: https://www.linkedin.com/jobs/view/100005
+
+----
+
+Unsubscribe | Manage preferences

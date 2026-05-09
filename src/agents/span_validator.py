@@ -35,6 +35,7 @@ _TITLE_TOKEN_PROBE = 4
 _MIN_TOKEN_LEN = 3
 
 _PARA_SPLIT = re.compile(r"\n\s*\n+")
+_ROW_SEP = re.compile(r"\n[\s]*[-=*_~]{3,}[\s]*\n", re.MULTILINE)
 _NON_WORD = re.compile(r"\W+")
 _WS = re.compile(r"\s+")
 
@@ -61,8 +62,25 @@ def _paragraphs(text: str) -> list[str]:
     return [p for p in _PARA_SPLIT.split(text or "") if p.strip()]
 
 
-def _signal_in(paragraph: str, title_tokens: list[str], company: str) -> bool:
-    norm = _normalize(paragraph)
+def _rows(text: str) -> list[str]:
+    """Split the email body into "rows" — one logical job entry each.
+
+    Prefers separator lines (``----``, ``====``, etc.) when the digest
+    uses them; otherwise falls back to blank-line paragraphs. Real
+    digests vary, but any digest that mixes multiple jobs in one body
+    needs SOME boundary; this picks up the common cases.
+    """
+    if not text:
+        return []
+    if _ROW_SEP.search(text):
+        chunks = _ROW_SEP.split(text)
+    else:
+        chunks = _paragraphs(text)
+    return [c for c in chunks if c.strip()]
+
+
+def _signal_in(row: str, title_tokens: list[str], company: str) -> bool:
+    norm = _normalize(row)
     if company and _normalize(company) in norm:
         return True
     if title_tokens:
@@ -74,9 +92,27 @@ def _signal_in(paragraph: str, title_tokens: list[str], company: str) -> bool:
     return False
 
 
+def _find_url_rows(url: str, rows: list[str]) -> list[str]:
+    """Return rows containing the URL (full first, then path-only)."""
+    if not url or not rows:
+        return []
+    matches = [r for r in rows if url in r]
+    if matches:
+        return matches
+    try:
+        path = urlparse(url).path
+    except ValueError:
+        path = ""
+    if path and len(path) >= 4:
+        return [r for r in rows if path in r]
+    return []
+
+
 def _decide(link, email_text: str) -> tuple[bool, str]:
-    host = _host_of(getattr(link, "url", ""))
-    if not host:
+    url = (getattr(link, "url", "") or "").strip()
+    if not url:
+        return False, "no_url"
+    if _host_of(url) is None:
         return False, "no_host"
     title_tokens = _significant_tokens(getattr(link, "title", "") or "", _TITLE_TOKEN_PROBE)
     company = (getattr(link, "company", "") or "").strip()
@@ -84,24 +120,26 @@ def _decide(link, email_text: str) -> tuple[bool, str]:
         # Nothing to anchor against — extractor returned a bare URL.
         # Accept; the broader pipeline will catch missing-title cases.
         return True, ""
-    paras = _paragraphs(email_text)
-    if len(paras) <= 1:
-        # Single-paragraph body — there is no cross-row swap to catch
-        # because there are no rows. Accept and move on.
+    rows = _rows(email_text)
+    if len(rows) <= 1:
+        # Single-row body — there is no cross-row swap to catch.
         return True, ""
-    host_paras = [p for p in paras if host in p.casefold()]
-    if not host_paras:
-        return False, "host_absent"
-    for para in host_paras:
-        if _signal_in(para, title_tokens, company):
+    matching = _find_url_rows(url, rows)
+    if not matching:
+        return False, "url_absent"
+    for row in matching:
+        if _signal_in(row, title_tokens, company):
             return True, ""
-    return False, "title_company_not_in_paragraph"
+    return False, "title_company_not_in_row"
 
 
 def filter_span_atomic(links, email_text: str, *, email_id: str | None = None):
-    """Drop ``JobLink`` records whose host does not co-occur with the
-    title or company text in any paragraph of ``email_text``. Logs each
-    drop with structured fields so the operator can audit cross-row
+    """Drop ``JobLink`` records whose URL does not co-occur with the
+    title or company text in any row of ``email_text``. Anchoring on
+    URL (rather than host) handles same-host digests where every row
+    has the same hostname but different paths — ZipRecruiter's ``/km/``
+    tracker tokens, LinkedIn's ``/jobs/view/`` IDs. Logs each drop
+    with structured fields so the operator can audit cross-row
     rejections.
 
     >>> from collections import namedtuple
