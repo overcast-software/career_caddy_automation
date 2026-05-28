@@ -36,13 +36,19 @@ _TRACKER_HOST_RE = re.compile(
     r"|email\.mg\.ziprecruiter\.com"
     r"|url\d*\.mailmunch\.co"
     r"|email\.[a-z0-9-]+\.mailgun\.org"
-    r"|links?\.[a-z0-9.-]+\.sendgrid\.net"
-    r"|u\d+\.ct\.sendgrid\.net"
+    r"|[a-z0-9-]+(\.[a-z0-9-]+)*\.sendgrid\.net"
     r"|trk\.[a-z0-9.-]+"
     r"|click\.[a-z0-9.-]+"
     r"|t\.[a-z0-9.-]+"
     r")$"
 )
+
+# Tracker hosts whose URLs we refuse to persist unresolved. On any
+# resolution failure (network error, dead marker, redirect budget) we
+# drop the URL entirely instead of falling back to the tracker. Today:
+# every *.sendgrid.net subdomain — a SendGrid click-tracker is useless
+# as a JobPost.link, the real destination is what we want or nothing.
+_NO_PERSIST_TRACKER_RE = re.compile(r"(?i)^([a-z0-9-]+(\.[a-z0-9-]+)*\.sendgrid\.net)$")
 
 # Query params to strip from canonical URLs. Safe to drop — none affect which
 # job listing the URL points at.
@@ -231,6 +237,13 @@ async def _resolve_one(client: httpx.AsyncClient, url: str) -> str | None:
             logger.info("tracker %s exceeded redirect budget — dropping", url)
             return None
     except (TimeoutError, httpx.HTTPError) as exc:
+        if _NO_PERSIST_TRACKER_RE.match(host):
+            logger.info(
+                "tracker %s: resolve failed (%s) and host is no-persist — dropping",
+                url,
+                exc,
+            )
+            return None
         logger.debug("tracker resolve failed, keeping raw URL %s: %s", url, exc)
         return _strip_tracking_params(url)
 
