@@ -16,7 +16,7 @@ import re
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_ai import Agent
 
 from src.agents.agent_factory import get_model
@@ -37,6 +37,7 @@ _TRACKER_HOST_RE = re.compile(
     r"|url\d*\.mailmunch\.co"
     r"|email\.[a-z0-9-]+\.mailgun\.org"
     r"|links?\.[a-z0-9.-]+\.sendgrid\.net"
+    r"|u\d+\.ct\.sendgrid\.net"
     r"|trk\.[a-z0-9.-]+"
     r"|click\.[a-z0-9.-]+"
     r"|t\.[a-z0-9.-]+"
@@ -72,8 +73,29 @@ _TRACKING_PARAMS = {
 }
 
 
+_ENCODED_DELIMITERS = ("%22", "%27", "%3e", "%3c")  # " ' > <
+
+
+def _sanitize_url(url: str) -> str:
+    """Strip trailing whitespace and stray HTML-delimiter chars (literal or
+    percent-encoded) that leak in when a tracker captures a URL straight
+    out of an `href="..."` attribute. Iterates until idempotent so mixed
+    cases like `...%22"` or `...%22%22` collapse fully."""
+    while True:
+        trimmed = url.strip().strip("\"'<>")
+        lower = trimmed.lower()
+        for enc in _ENCODED_DELIMITERS:
+            if lower.endswith(enc):
+                trimmed = trimmed[: -len(enc)]
+                break
+        if trimmed == url:
+            return trimmed
+        url = trimmed
+
+
 def _strip_tracking_params(url: str) -> str:
     """Drop known tracking query params from a URL, preserve everything else."""
+    url = _sanitize_url(url)
     try:
         p = urlparse(url)
     except ValueError:
@@ -136,9 +158,20 @@ async def _peek_for_dead_marker(client: httpx.AsyncClient, url: str) -> bool:
     return bool(_DEAD_LINK_MARKERS.search(body.decode("utf-8", errors="ignore")))
 
 
+_REDIRECT_HOP_BUDGET = 10
+
+
 async def _resolve_one(client: httpx.AsyncClient, url: str) -> str | None:
     """Follow redirects for a tracker URL. Returns canonical URL, or None if
     the tracker is dead. Non-tracker URLs skip the network call entirely.
+
+    Redirects are followed *manually* (not via httpx's follow_redirects=True)
+    so we can sanitize the Location header at each hop before httpx parses
+    it. The motivating case: SendGrid's redirect target sometimes ends with
+    a literal `"` — the closing quote of an HTML `href="..."` that leaked
+    into the tracker payload. httpx canonicalizes URLs on parse, so that `"`
+    becomes `%22` in the next request, which the destination treats as a
+    404. Stripping the bad char between hops keeps the chain alive.
 
     Uses GET with a bounded body read because some trackers (Jobot/SendGrid)
     serve error pages at HTTP 200 on the tracker domain with "Wrong Link"
@@ -157,24 +190,46 @@ async def _resolve_one(client: httpx.AsyncClient, url: str) -> str | None:
                 return None
         return canonical
 
+    current = url
+    body = b""
+    final_url = ""
     try:
-        async with client.stream(
-            "GET",
-            url,
-            follow_redirects=True,
-            timeout=3.0,
-            headers={"User-Agent": "Mozilla/5.0 (CareerCaddyResolver)"},
-        ) as r:
-            if r.status_code >= 400:
-                logger.info("tracker %s returned %d — dropping", url, r.status_code)
-                return None
-            final_url = str(r.url)
-            # Only read a small slice; error pages always put the marker up top.
-            body = b""
-            async for chunk in r.aiter_bytes():
-                body += chunk
-                if len(body) >= 16_384:
-                    break
+        for _hop in range(_REDIRECT_HOP_BUDGET):
+            async with client.stream(
+                "GET",
+                current,
+                follow_redirects=False,
+                timeout=3.0,
+                headers={"User-Agent": "Mozilla/5.0 (CareerCaddyResolver)"},
+            ) as r:
+                if r.is_redirect:
+                    loc = r.headers.get("location", "")
+                    if not loc:
+                        logger.info("tracker %s: empty Location at hop — dropping", url)
+                        return None
+                    # Sanitize BEFORE httpx parses: strip leaked HTML href
+                    # delimiters from the Location target so the next hop
+                    # doesn't fetch a URL-encoded `%22` and 404.
+                    loc = _sanitize_url(loc)
+                    current = str(httpx.URL(current).join(loc))
+                    continue
+                if r.status_code >= 400:
+                    logger.info(
+                        "tracker %s ended at %s with %d — dropping",
+                        url,
+                        current,
+                        r.status_code,
+                    )
+                    return None
+                async for chunk in r.aiter_bytes():
+                    body += chunk
+                    if len(body) >= 16_384:
+                        break
+                final_url = current
+                break
+        else:
+            logger.info("tracker %s exceeded redirect budget — dropping", url)
+            return None
     except (TimeoutError, httpx.HTTPError) as exc:
         logger.debug("tracker resolve failed, keeping raw URL %s: %s", url, exc)
         return _strip_tracking_params(url)
@@ -223,6 +278,12 @@ async def canonicalize_urls(links: list[JobLink]) -> list[JobLink]:
 class JobLink(BaseModel):
     url: str = Field(description="The job listing URL.")
     title: str = Field(description="Short human-readable role title. Never empty.")
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _strip_url_quotes(cls, v: str) -> str:
+        return _sanitize_url(v)
+
     company: str = Field(
         default="",
         description="Employer name. Empty string when not confidently inferable.",
