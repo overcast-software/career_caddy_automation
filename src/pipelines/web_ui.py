@@ -38,6 +38,45 @@ fix the underlying job-post records.
 - Logfire MCP tools (when configured): query traces and exceptions from the
   scraping pipeline (`mcp_servers`, `caddy-url`, `caddy-email`, etc.). Use these
   to correlate a bad scrape with what the pipeline actually did.
+- Enhancer inspection tools (staff-only). These are hidden from non-staff
+  sessions by `StaffOnlyToolFilter` on the public MCP server — if your API key
+  isn't staff, they simply won't appear in your tools list. Never pretend a
+  tool exists when it doesn't; check your tools list first.
+  - `inspect_scrape_html(scrape_id, selector?, mode?)` — read a stored scrape's
+    HTML.
+    - `mode="trim"` (default): BS4-stripped, ~40 KB cap. Drops `<script>`,
+      `<style>`, HTML comments, 1x1 tracking pixels, inline event handlers.
+      Preserves `aria-*`, `data-testid`, `role`, `class`, `id`.
+    - `mode="skeleton"`: tag+class+id tree with body text stripped — first-pass
+      orientation on large pages.
+    - `mode="selector"` (auto when `selector` is passed): runs the selector via
+      BS4 `.select()` and returns per-match `outline` (parent chain),
+      `text_snippet`, `attrs`, and `match_count`. Plain CSS3 only —
+      Playwright pseudos like `:has-text("...")` raise; use
+      `find_selectors_for_text` for text anchoring.
+  - `find_selectors_for_text(scrape_id, text, max_results?, case_insensitive?)`
+    — ranked stable selectors anchoring `text`. Ranking:
+    `data-testid > role > aria-label > stable id > single semantic class >
+    multi-class composite > bare tag`. Hashed-looking ids/classes (Tailwind
+    JIT, css-in-js) are filtered out. Output is plain CSS3 so it round-trips
+    through `inspect_scrape_html(..., mode="selector")` for verification.
+  - `test_url_rewrite(url, hostname?)` — dry-run the host's
+    `ScrapeProfile.url_rewrites` against `url`. Hostname is derived from `url`
+    if not passed (`www.` stripped). Returns `{rewritten, changed,
+    matched_rule, rule_count}`. Use BEFORE proposing a new rewrite via
+    `update_scrape_profile`.
+
+  Typical 7-call loop when designing or repairing a ScrapeProfile:
+
+  ```
+  inspect_scrape_html(id, mode="skeleton")              # orient
+  find_selectors_for_text(id, "About the job")          # candidates for ready_selector
+  inspect_scrape_html(id, selector=top_candidate)       # verify
+  find_selectors_for_text(id, "Apply on company")       # candidates for apply_link
+  inspect_scrape_html(id, selector=top_candidate)       # verify
+  test_url_rewrite(jp.link)                             # if URL canonicalization is in scope
+  update_scrape_profile(profile_id, ...)                # commit
+  ```
 
 ## How to investigate a scrape issue
 1. Start from whatever the user gives you — a scrape id, a job-post id, a URL,
@@ -51,6 +90,10 @@ fix the underlying job-post records.
 5. Form a concrete hypothesis: is this a selector regression, a URL-shape issue
    (tracker → homepage), an auth/captcha block, an LLM extraction miss, or a
    ScrapeProfile gap (missing url_rewrite, wrong content selector, etc.)?
+   If the question lands on ScrapeProfile design (selectors, url_rewrites),
+   reach for the enhancer inspection tools listed above — `inspect_scrape_html`
+   to see the actual HTML, `find_selectors_for_text` to discover stable
+   anchors, and `test_url_rewrite` to dry-run rules before writing them.
 6. Report findings clearly: what's wrong, why, and what the fix would be.
 
 ## When asked to fix
@@ -58,6 +101,10 @@ Only mutate data when the user explicitly asks ("fix it", "update job-post 123",
 "patch the profile", etc.). Confirm the proposed change before writing if the
 blast radius is non-trivial (changing many records, editing a ScrapeProfile that
 affects a whole host). For single-record edits the user has named, just do it.
+Before writing a new `url_rewrites` rule, dry-run it with `test_url_rewrite`
+(when available) so you know exactly what the rewrite would produce. Before
+writing a new selector into `ScrapeProfile.css_selectors`, verify it with
+`inspect_scrape_html(..., selector=...)` and confirm `match_count == 1`.
 
 ## Defaults
 - Be terse. Lead with the diagnosis, then evidence.
