@@ -23,6 +23,7 @@ class EmailMeta:
     id: str
     subject: str
     tags: set[str] = field(default_factory=set)
+    thread_id: str = ""
 
 
 class EmailSource(Protocol):
@@ -43,7 +44,7 @@ class EmailSource(Protocol):
         """
         ...
 
-    async def add_tags(self, email_id: str, tags: list[str]) -> None:
+    async def add_tags(self, thread_id: str, tags: list[str]) -> None:
         """Idempotent tag add. Safe to call with tags already present."""
         ...
 

@@ -192,23 +192,32 @@ async def _create_posts_from_urls(
             duplicates.append(link.url)
             logger.info(
                 "  job-post dup: %s  id=%s  canonical=%s  (%s)",
-                link.title, post_id, canonical, link.url,
+                link.title,
+                post_id,
+                canonical,
+                link.url,
             )
         else:
             # 201 (fresh create) — or any other 2xx the api evolves to use.
             created.append(link.url)
             logger.info(
                 "  job-post: %s @ %s  id=%s  canonical=%s  (%s)",
-                link.title, link.company or "—", post_id, canonical, link.url,
+                link.title,
+                link.company or "—",
+                post_id,
+                canonical,
+                link.url,
             )
             if created_acc is not None and post_id is not None:
-                created_acc.append({
-                    "id": post_id,
-                    "title": link.title or "(untitled)",
-                    "company": link.company or "—",
-                    "link": canonical or link.url,
-                    "source": "email_url",
-                })
+                created_acc.append(
+                    {
+                        "id": post_id,
+                        "title": link.title or "(untitled)",
+                        "company": link.company or "—",
+                        "link": canonical or link.url,
+                        "source": "email_url",
+                    }
+                )
     return {"created": created, "duplicates": duplicates, "failed": failed}
 
 
@@ -258,13 +267,15 @@ async def _create_inline_job_post(
         post_resource = (resp.get("data") or {}).get("data") or {}
         post_id = post_resource.get("id")
         if post_id is not None:
-            created_acc.append({
-                "id": post_id,
-                "title": res.title or "(untitled)",
-                "company": res.company or "—",
-                "link": None,
-                "source": "email_direct",
-            })
+            created_acc.append(
+                {
+                    "id": post_id,
+                    "title": res.title or "(untitled)",
+                    "company": res.company or "—",
+                    "link": None,
+                    "source": "email_direct",
+                }
+            )
     return "created"
 
 
@@ -330,7 +341,7 @@ async def _triage_one(
         if "evaluated" not in tags:
             is_job = await _run_classify(classify_agent, email_id)
             new_tags = ["evaluated"] + (["job_post"] if is_job else [])
-            await source.add_tags(email_id, new_tags)
+            await source.add_tags(meta.thread_id, new_tags)
             tags.update(new_tags)
             logger.info("[%s] %s  %s", "JOB" if is_job else "---", email_id, meta.subject)
             if not is_job:
@@ -348,7 +359,7 @@ async def _triage_one(
                 new_tags.append("follow_up")
             if is_inline:
                 new_tags.append("inline_post")
-            await source.add_tags(email_id, new_tags)
+            await source.add_tags(meta.thread_id, new_tags)
             tags.update(new_tags)
             prefix = "FUP" if is_followup else ("DIR" if is_inline else "NEW")
             logger.info(
@@ -372,7 +383,7 @@ async def _triage_one(
             ):
                 ok = await _apply_status_update(api, res)
                 if ok:
-                    await source.add_tags(email_id, ["caddy_processed"])
+                    await source.add_tags(meta.thread_id, ["caddy_processed"])
                     tags.add("caddy_processed")
                     final_outcome = "processed"
                     return final_outcome
@@ -407,7 +418,7 @@ async def _triage_one(
             if inline_outcome is None:
                 final_outcome = "inline_failed"
                 return final_outcome
-            await source.add_tags(email_id, ["caddy_processed"])
+            await source.add_tags(meta.thread_id, ["caddy_processed"])
             tags.add("caddy_processed")
             logger.info(
                 "  inline-post %s: %s @ %s  conf=%.2f",
@@ -440,7 +451,7 @@ async def _triage_one(
                 return final_outcome
             extracted = await extract_job_urls(text)
             if not extracted.job_urls:
-                await source.add_tags(email_id, ["caddy_processed"])
+                await source.add_tags(meta.thread_id, ["caddy_processed"])
                 tags.add("caddy_processed")
                 logger.info(
                     "  stage5: no URLs extracted from %s (%s)",
@@ -451,7 +462,7 @@ async def _triage_one(
                 return final_outcome
             url_outcome = await _create_posts_from_urls(api, extracted.job_urls, created_acc)
             if not url_outcome["failed"]:
-                await source.add_tags(email_id, ["caddy_processed"])
+                await source.add_tags(meta.thread_id, ["caddy_processed"])
                 tags.add("caddy_processed")
             logger.info(
                 "  stage5: created=%d duplicates=%d failed=%d",
@@ -534,17 +545,19 @@ async def run_once(limit: int, backend: str | None, days_back: int) -> None:
 # State queries used by --status. Same date scope as list_pending so
 # counts line up with what the daemon would see on a normal pass.
 STATE_QUERIES: dict[str, str] = {
-    "unevaluated":             "not tag:evaluated",
-    "evaluated_not_job":       "tag:evaluated and not tag:job_post",
+    "unevaluated": "not tag:evaluated",
+    "evaluated_not_job": "tag:evaluated and not tag:job_post",
     "job_post_pending_refine": "tag:job_post and not tag:refined",
-    "refined_follow_up":       "tag:follow_up and not tag:caddy_processed",
-    "refined_inline_post":     "tag:inline_post and not tag:caddy_processed",
-    "refined_new_post":        "tag:refined and not tag:follow_up and not tag:inline_post and not tag:caddy_processed",
-    "caddy_processed":         "tag:caddy_processed",
+    "refined_follow_up": "tag:follow_up and not tag:caddy_processed",
+    "refined_inline_post": "tag:inline_post and not tag:caddy_processed",
+    "refined_new_post": "tag:refined and not tag:follow_up and not tag:inline_post and not tag:caddy_processed",
+    "caddy_processed": "tag:caddy_processed",
 }
 
 
-async def print_status(backend: str | None, days_back: int, show: str | None, show_limit: int) -> None:
+async def print_status(
+    backend: str | None, days_back: int, show: str | None, show_limit: int
+) -> None:
     """Tag-state breakdown of the mailbox so the user can see where
     pending work is stuck without watching live logs. `--show <state>`
     dumps the matching email subjects/ids."""

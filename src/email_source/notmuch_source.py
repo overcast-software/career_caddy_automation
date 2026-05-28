@@ -62,21 +62,26 @@ class NotmuchSource:
             raw_id = query_arr[0]
             if raw_id.startswith("id:"):
                 raw_id = raw_id[3:]
+            # query_arr[0] may be "msg1 id:msg2 ..." for multi-message threads;
+            # take only the first message ID (used for content loading).
+            raw_id = raw_id.split(" id:")[0]
+            thread_id = thread.get("thread", "")
             out.append(
                 EmailMeta(
                     id=raw_id,
                     subject=_decode_subject(thread.get("subject") or ""),
                     tags=set(thread.get("tags") or []),
+                    thread_id=thread_id,
                 )
             )
         return out
 
-    async def add_tags(self, email_id: str, tags: list[str]) -> None:
+    async def add_tags(self, thread_id: str, tags: list[str]) -> None:
         if not tags:
             return
         args = [f"+{t}" for t in tags]
         subprocess.run(
-            ["notmuch", "tag", *args, "--", f'id:"{email_id}"'],
+            ["notmuch", "tag", *args, "--", f"thread:{thread_id}"],
             check=True,
             timeout=10,
         )
@@ -125,11 +130,14 @@ class NotmuchSource:
             raw_id = query_arr[0]
             if raw_id.startswith("id:"):
                 raw_id = raw_id[3:]
+            raw_id = raw_id.split(" id:")[0]
+            thread_id = thread.get("thread", "")
             out.append(
                 EmailMeta(
                     id=raw_id,
                     subject=_decode_subject(thread.get("subject") or ""),
                     tags=set(thread.get("tags") or []),
+                    thread_id=thread_id,
                 )
             )
         return out

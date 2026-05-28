@@ -28,7 +28,7 @@ class ImapSource:
             "Set CADDY_EMAIL_BACKEND=notmuch for now."
         )
 
-    async def add_tags(self, email_id: str, tags: list[str]) -> None:
+    async def add_tags(self, thread_id: str, tags: list[str]) -> None:
         raise NotImplementedError(
             "IMAP backend not yet implemented. Set CADDY_EMAIL_BACKEND=notmuch for now."
         )
