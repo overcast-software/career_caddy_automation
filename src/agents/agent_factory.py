@@ -7,19 +7,13 @@ Model resolution order: role-specific env var → CADDY_DEFAULT_MODEL → openai
 """
 
 import os
-from collections.abc import AsyncIterator, Callable
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from typing import Any
 
 from pydantic_ai import Agent
-from pydantic_ai._utils import PeekableAsyncStream
-from pydantic_ai.messages import ModelResponseStreamEvent
-from pydantic_ai.models import ModelRequestParameters
 from pydantic_ai.models.openai import OpenAIChatModel
-from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
-from pydantic_ai.usage import RequestUsage
 
 from src.agents.history import sanitize_orphaned_tool_calls
 from src.client.toolset import CareerCaddyDeps, CareerCaddyToolset
@@ -29,7 +23,7 @@ from src.client.toolset import CareerCaddyDeps, CareerCaddyToolset
 # ---------------------------------------------------------------------------
 
 try:
-    from pydanticai_ollama.models.ollama import OllamaModel, OllamaStreamedResponse
+    from pydanticai_ollama.models.ollama import OllamaModel
     from pydanticai_ollama.providers.ollama import OllamaProvider
     from pydanticai_ollama.settings.ollama import OllamaModelSettings
 
@@ -37,74 +31,11 @@ try:
 except ImportError:
     _HAS_OLLAMA = False
     OllamaModel = None
-    OllamaStreamedResponse = None
+
     OllamaProvider = None
     OllamaModelSettings = None
 
 if _HAS_OLLAMA:
-
-    class ConcreteOllamaProvider(OllamaProvider):
-        """Concrete implementation of OllamaProvider with provider_url method."""
-
-        def provider_url(self) -> str:
-            return self.base_url
-
-    @dataclass
-    class ConcreteOllamaStreamedResponse(OllamaStreamedResponse):
-        """Concrete implementation of OllamaStreamedResponse."""
-
-        _model_name: str
-        _model_profile: ModelProfile
-        _response: PeekableAsyncStream[Any]
-        _timestamp: datetime
-
-        @property
-        def model_name(self) -> str:
-            return self._model_name
-
-        @property
-        def provider_name(self) -> str | None:
-            return "ollama"
-
-        @property
-        def timestamp(self) -> datetime:
-            return self._timestamp
-
-        def provider_url(self) -> str:
-            return os.environ.get("OLLAMA_API_BASE", "http://localhost:11434")
-
-        async def _get_event_iterator(self) -> AsyncIterator[ModelResponseStreamEvent]:
-            async for chunk in self._response:
-                self._usage += RequestUsage(input_tokens=0, output_tokens=1)
-                if hasattr(chunk, "message") and chunk.message.content:
-                    text_event = self._parts_manager.handle_text_delta(
-                        vendor_part_id="content",
-                        content=chunk.message.content,
-                        thinking_tags=self._model_profile.thinking_tags,
-                        ignore_leading_whitespace=self._model_profile.ignore_streamed_leading_whitespace,
-                    )
-                    if text_event:
-                        yield text_event
-
-    class ConcreteOllamaModel(OllamaModel):
-        """Concrete OllamaModel that returns ConcreteOllamaStreamedResponse."""
-
-        async def _process_streamed_response(
-            self,
-            response: AsyncIterator[Any],
-            model_request_parameters: ModelRequestParameters,
-        ) -> ConcreteOllamaStreamedResponse:
-            peekable_response = PeekableAsyncStream(response)
-            await peekable_response.peek()
-
-            return ConcreteOllamaStreamedResponse(
-                model_request_parameters=model_request_parameters,
-                _response=peekable_response,
-                _model_name=self._model_name,
-                _model_profile=self.profile,
-                _timestamp=datetime.now(UTC),
-            )
-
     ollama_settings = OllamaModelSettings(
         temperature=0.1,
         num_predict=1024,
@@ -116,24 +47,24 @@ if _HAS_OLLAMA:
     )
 
     _ollama_base = os.environ.get("OLLAMA_API_BASE", "http://localhost:11434")
-    ollama_provider = ConcreteOllamaProvider(base_url=_ollama_base)
+    ollama_provider = OllamaProvider(base_url=_ollama_base)
 
     # Pre-configured Ollama models — use these by assigning to env vars, e.g.:
     #   CADDY_MODEL=ollama:qwen3:4b-instruct
     # Or reference the model objects directly in custom code.
-    voytas26_openclaw_oss_model = ConcreteOllamaModel(
+    voytas26_openclaw_oss_model = OllamaModel(
         model_name="voytas26/openclaw-oss-20b-deterministic",
         provider=ollama_provider,
     )
-    phi3_model = ConcreteOllamaModel(
+    phi3_model = OllamaModel(
         model_name="phi3:14b",
         provider=ollama_provider,
     )
-    astrail3_model = ConcreteOllamaModel(
+    astrail3_model = OllamaModel(
         model_name="60MPH/astral3-tools:12b",
         provider=ollama_provider,
     )
-    llama3_model = ConcreteOllamaModel(
+    llama3_model = OllamaModel(
         model_name="llama3.3",
         provider=ollama_provider,
     )
