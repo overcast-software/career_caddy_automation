@@ -1,6 +1,31 @@
 """Shared Pydantic models for job and company data."""
 
-from pydantic import BaseModel, Field, model_validator
+from urllib.parse import urlparse
+
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+_ALLOWED_URL_SCHEMES = frozenset({"https", "mailto"})
+
+
+def _validate_job_url(value: str | None) -> str | None:
+    """Reject job URLs that aren't https:// or mailto:.
+
+    A jobPost.url is one of two things: a link to a specific listing
+    (https) or a direct-solicitation recruiter address (mailto). Plain
+    http and other schemes are rejected at the model boundary so bad
+    values can't reach the Career Caddy API.
+    """
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    scheme = urlparse(value).scheme.lower()
+    if scheme not in _ALLOWED_URL_SCHEMES:
+        raise ValueError(
+            f"url must use https:// or mailto: (got scheme {scheme!r} in {value!r})"
+        )
+    return value
 
 
 class JobPostData(BaseModel):
@@ -16,7 +41,7 @@ class JobPostData(BaseModel):
         None, description="Employment type (full-time, part-time, contract, etc.)"
     )
     remote_ok: bool = Field(default=False, description="Whether remote work is allowed")
-    link: str = Field(None, description="Original job posting link (URL)")
+    link: str | None = Field(None, description="Original job posting link (URL)")
     url: str | None = Field(None, description="Alias for link")
 
     @model_validator(mode="before")
@@ -27,6 +52,8 @@ class JobPostData(BaseModel):
             if data.get("url") and not data.get("link"):
                 data["link"] = data["url"]
         return data
+
+    _validate_link = field_validator("link", "url")(_validate_job_url)
 
     posted_date: str | None = Field(None, description="When the job was posted (ISO format)")
 

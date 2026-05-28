@@ -58,6 +58,30 @@ def _host_of(url: str) -> str | None:
     return host or None
 
 
+def _identifier_of(url: str) -> str | None:
+    """Return a stable identifier for the URL — host for http(s),
+    address for mailto. Used to gate ``_decide``: a URL with no
+    identifier is malformed and gets dropped.
+
+    Direct-solicitation emails (a recruiter writing "send your resume
+    to hiring@acme.com") make the address itself the apply target, so
+    the extractor emits `mailto:hiring@acme.com` as the job URL. That
+    URL has no hostname — the address lives in the parsed path — so
+    falling back on the path here keeps mailto URLs from being dropped
+    while still letting row-anchoring catch cross-row hallucinations.
+    """
+    host = _host_of(url)
+    if host:
+        return host
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+    if parsed.scheme == "mailto" and parsed.path:
+        return parsed.path.lower()
+    return None
+
+
 def _paragraphs(text: str) -> list[str]:
     return [p for p in _PARA_SPLIT.split(text or "") if p.strip()]
 
@@ -112,7 +136,7 @@ def _decide(link, email_text: str) -> tuple[bool, str]:
     url = (getattr(link, "url", "") or "").strip()
     if not url:
         return False, "no_url"
-    if _host_of(url) is None:
+    if _identifier_of(url) is None:
         return False, "no_host"
     title_tokens = _significant_tokens(getattr(link, "title", "") or "", _TITLE_TOKEN_PROBE)
     company = (getattr(link, "company", "") or "").strip()

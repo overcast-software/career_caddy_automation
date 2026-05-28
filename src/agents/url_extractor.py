@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
 from src.agents.agent_factory import get_model
+from src.agents.usage_reporter import report_usage
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +245,11 @@ _SYSTEM_PROMPT = """\
 You extract job-posting links from an email and capture whatever useful
 context the email provides about each one. Return structured JobLink records.
 
-URL FILTER — only keep http(s) links to a SPECIFIC JOB LISTING page:
+URL FILTER — keep things that point at the way to apply to a SPECIFIC
+role. Usually that's a job-listing URL; for direct-solicitation emails
+(a recruiter writing "send your resume to hiring@acme.com") the apply
+target IS the email address itself, so the address becomes the URL.
+Allowed schemes: http, https, mailto.
 
 KEEP:
   - /jobs/<id>, /job/<slug>, /careers/<role>, lever.co/<co>/<uuid>,
@@ -252,6 +257,11 @@ KEEP:
   - Direct job-board listing URLs (LinkedIn /jobs/view/<id>, Indeed
     /viewjob?jk=<id>, Glassdoor /job-listing/<slug>)
   - ATS apply links when they are the only link to the role
+  - mailto:<address> when the email is a direct solicitation and the
+    recruiter asks the candidate to reply / send a resume to that
+    address. In that case the address IS the apply link — emit it as
+    the literal `mailto:foo@bar.com` form (no bare address, no separate
+    web URL invented for the role).
 
 REJECT:
   - Homepages, /careers root, /jobs search pages with no id
@@ -306,7 +316,11 @@ def build_url_extractor_agent() -> Agent:
     )
 
 
-async def extract_job_urls(email_text: str) -> ExtractedUrls:
+async def extract_job_urls(
+    email_text: str,
+    api_token: str = "",
+    pipeline_run_id: str | None = None,
+) -> ExtractedUrls:
     """Run the extractor on an email body. Returns ExtractedUrls (may be empty).
 
     Post-processes the LLM output by resolving tracker redirects, stripping
@@ -314,6 +328,15 @@ async def extract_job_urls(email_text: str) -> ExtractedUrls:
     """
     agent = build_url_extractor_agent()
     result = await agent.run(email_text)
+    if api_token:
+        await report_usage(
+            api_token=api_token,
+            agent_name="url_extractor",
+            model_name=get_model("job_extractor"),
+            usage=result.usage(),
+            trigger="inbox_triage",
+            pipeline_run_id=pipeline_run_id,
+        )
     extracted = result.output
     before = len(extracted.job_urls)
     extracted.job_urls = await canonicalize_urls(extracted.job_urls)
