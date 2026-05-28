@@ -39,6 +39,90 @@ https://url9751.alerts.jobot.com/ls/click?upn=u001.nzDSnI8Q0Y9UfX4wWW5-2BpGg733g
 https://url9751.alerts.jobot.com/ls/click?upn=u001.nzDSnI8Q0Y9UfX4wWW5-2BpLamDLJUw5zsWrRP9ba15kqpBU1PFPijhEoh5-2FPqB8m0-2BTxRyx9XCaQvnnuNVX4T-2BGwqeGaNv5uu0YAdZXhvaWd48WgrlA-2BkSetjs0h19tz6Dm6yAwPSvLmd0jRZJd63YzTZe1Gu9-2BEgLRZHIHu0-2Fzji4d2vBm7KJ4cvBGEE73plgz4c3fbl0BlI79djFYpj2ag-3D-3D9jkp_LE6cZWOQySnSB-2Bd7rKmoZeFPlDxPmTGtst19ATjV8uqjG8xd6FMnAlhu4UrfnFEeGmbxsYkxciX5RSU8r4D4k0oEBgdPlTV1X0BwytKxVE89UoXYP058meThwLMJsyn8rHwZ-2BhcW2r9jZHRZqWCwWHHWbFc3Yc-2BhPto1WQZIZWfGYUwOcFUMDCb2hIUIdayNiQ976pJj-2Fzu49g5Ptc8S8rRpJB-2FpXxvTfR2-2BC6PiGh9mN9cH9kknbAwksq-2BNxMmz8RXF7OD2IkAKD-2BAMGynIkQ-3D-3D
 
 https://url9751.alerts.jobot.com/ls/click?upn=u001.nzDSnI8Q0Y9UfX4wWW5-2BpLmDLJUw5zsWrRP9ba15kqq1FgSiupbhuMVj93WzKC41rzRd41Pk0QcS1hz-2FHhLqtG5Y1R4rALLYHE0u7dAAElqFG5q63x9oXaHhhDqYHJlyUfPHAVdIWtDHCIbA0mNGHfpRQfmxLcstEp9x4ALzmaRdWprI5B0DcY2t45cEqcFhpjkEwsjg56lGOvIXnGiL5g-3D-3D13KN_NE755C4sNRUd1jBQo-2BOPb25tnSx-2FZVStHCzurLhDLfQMduUVDJ4wdTehIkCuKoxUBapNwKrlpR0CfT-2BiwZpbFR5b-2F7w9-2FOdvAyBg1BbpybBNsHm7bHQX1-2FBAITxDX3MVYHdwmu-2FCKrRo6Wy0OpowKyvRQCa7kTUPbmBgZ3UqUf0ah3578g1NKVWhYCpxhwf9HRc5QvimrpS-2FCqVA3AwFm-2FXvMJEtTO7x1ucX2MgBD-2B7bNNjJY15hjWCCWhqwMJ7zGZ9MfvTF14wYhTHAO-2BEpGg-3D-3D
+* DONE remove orphaned dedup_scorer agent + factory
+CLOSED: [2026-05-15 Fri]
+:LOGBOOK:
+- State "DONE" from "IN_PROGRESS" [2026-05-15 Fri] \\
+  dedup_scorer code never reached main HEAD — it lived only as
+  uncommitted working-tree modifications. =git checkout HEAD --
+  src/agents/agent_factory.py src/agents/email_agents.py CLAUDE.md=
+  restored main, dropping =DedupResult=, =_DEDUP_PROMPT=,
+  =get_dedup_agent=, =_dedup_mcp_factory=, the
+  =register_agent("dedup_scorer", ...)= block, and the
+  =DEDUP_SCORER_MODEL= entry from =_ROLE_ENV_MAP= in one shot.
+  =rg dedup_scorer|get_dedup_agent|DedupResult|_DEDUP_PROMPT|DEDUP_SCORER_MODEL=
+  returns zero hits across src/ and scripts/. =uv run ruff check= passes.
+  No PR opened — the working tree now matches main HEAD, nothing to commit.
+- State "IN_PROGRESS" from "TODO" [2026-05-15 Fri] \\
+  cc_auto picking this up
+- Note taken on [2026-05-15 Fri] \\
+  filed after diagnosing the ziprecruiter "Visa" 50× MCP loop
+:END:
+
+** Why
+On [2026-05-15] one =20260515121426.8ea41ddd25714a7f@mg.ziprecruiter.com=
+email caused the =dedup_scorer= agent to call =find_company_by_name("Visa")=
+50 times against =mcp.careercaddy.online= before producing a (useless)
+=DedupResult=. Triage row 1080, run 602; logfire traces start at
+=2026-05-15T15:21:24Z= and span ~70s of gpt-4o-mini ↔ MCP ping-pong.
+
+Root cause: the filter in =src/agents/agent_factory.py=
+=_dedup_mcp_factory= allows =find_duplicate_candidates= — *a tool that
+does not exist on the upstream public MCP server.* The actual tool is
+=get_duplicate_candidates(job_post_id: int)=, which takes an existing
+post id (wrong signature for a pre-POST check anyway). After the filter
+strips the non-existent name, only =find_company_by_name= +
+=search_companies= reach the agent. The system prompt
+(=_DEDUP_PROMPT= in =src/agents/email_agents.py=) tells the model to
+call =find_duplicate_candidates= — model can't find it, fixates on the
+nearest-named tool, loops. No =UsageLimits= on the =agent.run= call
+either, so it ran to gpt-4o-mini's default ~50-turn ceiling.
+
+The dedup_scorer never had a working backend. The api-side dedupe-on-POST
+(link match + content_fingerprint, with =merge_empty_fields_from_attrs=
+on the existing row) already covers the link-bearing case. Inline
+=link=NULL= posts lose the suffix-drift catch, but that's a smaller
+hole than the cost+latency of a broken pre-POST scorer.
+
+** What's already done
+=scripts/inbox_triage.py= — =_run_dedup= function, =DedupResult= +
+=get_dedup_agent= imports, and the =dedup_agent= parameter on
+=_create_posts_from_urls= / =_create_inline_job_post= were removed by the
+product owner in the same session. The orchestrator no longer invokes
+the dedup_scorer.
+
+** What remains (this ticket)
+1. =src/agents/agent_factory.py= — delete the =_dedup_mcp_factory= inner
+   function and the =register_agent("dedup_scorer", ...)= block
+   (currently around lines 430–455). Drop the =DEDUP_SCORER_MODEL= entry
+   from the role→env-var table (around line 190).
+2. =src/agents/email_agents.py= — delete =DedupResult=,
+   =_DEDUP_PROMPT=, and =get_dedup_agent= (currently around
+   lines 286–341). Drop the corresponding =DedupResult= /
+   =get_dedup_agent= re-exports if any are surfaced elsewhere.
+3. Grep for stragglers: =rg -n 'dedup_scorer|get_dedup_agent|DedupResult|_DEDUP_PROMPT|DEDUP_SCORER_MODEL'=
+   inside =src/= and =scripts/=. Expected hits after this ticket: zero
+   (notes.org references may remain — leave those alone, they're history).
+4. Run =uv run ruff check .= and =uv run pytest tests/= before pushing.
+   Open the PR off =main= as =chore/remove-dedup-scorer=. Submodule
+   convention does not apply — cc_auto is a standalone sibling repo,
+   not a submodule of career_caddy.
+
+** Verification
+- Run the orchestrator once against a small batch
+  (=uv run caddy-inbox --once --limit 5=) and confirm:
+  - No span named =dedup_scorer run= or =running tool: find_company_by_name=
+    appears in logfire for the run.
+  - Email→JobPost outcomes unchanged: =new_created= for genuinely new
+    posts, =duplicate= for link-known posts (api dedupe still catches them).
+
+** Out of scope
+- Building a real pre-POST dedup endpoint on the career_caddy api +
+  matching MCP tool. Considered and discarded in this session — api-side
+  dedupe-on-POST is sufficient for our current ingest mix. If the
+  inline =link=NULL= suffix-drift case becomes load-bearing later,
+  revisit with a fresh design.
+
 * DONE auto-scrape + auto-score from email pipeline
 CLOSED: [2026-04-20 Mon]
 Implemented the plan in notes.org ("auto-scrape + auto-score from email pipeline"):

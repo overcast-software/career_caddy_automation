@@ -76,7 +76,13 @@ def _unwrap(result: Any) -> Any:
 
 def _scrape_list(payload: Any) -> list[dict]:
     if isinstance(payload, str):
-        payload = json.loads(payload)
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            logger.error("get_scrapes returned non-JSON text: %r", payload[:300])
+            return []
+    if isinstance(payload, list):
+        return payload
     if not isinstance(payload, dict):
         return []
     body = payload.get("data")
