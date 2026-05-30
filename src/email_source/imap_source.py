@@ -1,7 +1,9 @@
 """IMAP implementation of :class:`EmailSource`.
 
-**Not yet implemented.** The full design lives in ``notes.org:426`` and the
-approved plan at ``/home/oldbones/.claude/plans/resilient-beaming-clarke.md``.
+**Not yet implemented.** Design sketch: back the "tag" concept with a
+local store keyed on ``(account, folder, uidvalidity, uid, tag)``; use
+``aioimaplib`` for async IMAP I/O; expose a matching MCP server
+mirroring the notmuch one.
 
 To implement:
   * back the "tag" concept with a sqlite store keyed on

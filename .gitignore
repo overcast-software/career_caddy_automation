@@ -12,3 +12,6 @@ dist/
 
 # personal scratch files
 .ok
+
+# local-only org-mode notes — never commit (cc-auto memory: notes_local_only)
+notes.org

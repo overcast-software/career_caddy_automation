@@ -1,6 +1,6 @@
 """caddy-trace-email <email_id> — run one email through caddy-inbox with full tracing."""
 
-# REMOVE WHEN STABLE — see /home/oldbones/.claude/plans/zippy-booping-donut.md
+# REMOVE WHEN STABLE — observability scaffolding for inbox debugging.
 #
 # The full caddy-inbox loop with `--once --limit 1` and a notmuch query for a
 # specific email_id, with CADDY_TRIAGE_TRACE forced on for this single run.

@@ -1,6 +1,6 @@
 """Span-attribute hygiene for the email-triage agents."""
 
-# REMOVE WHEN STABLE — see /home/oldbones/.claude/plans/zippy-booping-donut.md
+# REMOVE WHEN STABLE — observability scaffolding for inbox debugging.
 #
 # `instrument_pydantic_ai()` already wraps every agent run in a logfire span,
 # but the span name embeds `email_id` in the task-string ("Classify email id:

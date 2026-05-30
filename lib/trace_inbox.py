@@ -1,6 +1,6 @@
 """Per-email forensic timeline for the caddy-inbox triage pipeline."""
 
-# REMOVE WHEN STABLE — see /home/oldbones/.claude/plans/zippy-booping-donut.md
+# REMOVE WHEN STABLE — observability scaffolding for inbox debugging.
 #
 # `caddy-inbox` runs through five stages (classify, refine, follow-up,
 # inline-post, URL-extract → JobPost). The orchestrator emits per-stage

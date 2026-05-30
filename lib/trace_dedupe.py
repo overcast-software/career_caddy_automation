@@ -1,6 +1,6 @@
 """Per-write JobPost outcome forensics."""
 
-# REMOVE WHEN STABLE — see /home/oldbones/.claude/plans/zippy-booping-donut.md
+# REMOVE WHEN STABLE — observability scaffolding for inbox debugging.
 #
 # Wraps the `create_job_post_*` calls cc_auto makes from the email pipeline.
 # Each invocation produces a structured logfire event recording:

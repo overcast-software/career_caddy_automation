@@ -3,7 +3,7 @@ name = "career-caddy-automation"
 version = "0.1.0"
 description = "Standalone automation toolkit for Career Caddy — scrape job postings, classify emails, and manage applications via the Career Caddy API or MCP endpoint."
 requires-python = ">=3.11"
-license = "MIT"
+license = "GPL-3.0-only"
 dependencies = [
     "httpx>=0.25.0",
     "pydantic>=2.0.0",
