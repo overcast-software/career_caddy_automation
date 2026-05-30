@@ -10,13 +10,13 @@ from one user's machines (laptop, pibu, home server). It triages email,
 classifies and refines messages, follows up on applications, runs the
 caddy-web copilot, and orchestrates A2A sub-agents.
 
-cc_auto is being **promoted to a first-class submodule** of the
+cc_auto is the **fourth submodule** of the
 [Career Caddy parent](https://github.com/overcast-software/career_caddy)
-at path `automation/`, alongside `api/`, `frontend/`, `agents/`. See
-`notes.org` → `* Promoting cc_auto → automation/ — first-class submodule
-[2026-05-30]` for the conversion plan; the parent's [CLAUDE.md] is the
-top-level orientation. Until conversion ships, the repo still lives at
-`~/Network/syncthing/Projects/career_caddy_automation/`.
+at path `automation/`, alongside `api/`, `frontend/`, `agents/`. This
+repo IS `automation/` relative to the parent worktree — the canonical
+working location is `<parent>/automation/`, not the older standalone
+sibling path. The parent's [CLAUDE.md] is the top-level orientation;
+see `notes.org` → Operations / Architecture for cross-repo contracts.
 
 **Role split with `agents/` (sibling submodule):**
 - `agents/` = **service-side** — Camoufox/Playwright, scrape_graph,
@@ -79,7 +79,7 @@ uv run --group dev pytest tests/<file>::<test>
 | `caddy-orchestrator` | `src.agents.a2a_orchestrator:run` — A2A client/REPL (`--web` for UI) |
 | `caddy-gateway` | `mcp_servers.agents_gateway:main` — exposes sub-agents as MCP tools (default) or A2A services (`--mode a2a`) |
 | `caddy-trace-email <id>` | `scripts.trace_email` — one-shot triage of a single email with CADDY_TRIAGE_TRACE + CADDY_DEDUPE_TRACE forced on |
-| ~`caddy-login`/`caddy-poller`/`caddy-discover`~ | **removed** — canonical implementations live in the parent's `agents/tools/{manual_login,discover_sites}.py` and `agents/pollers/hold_poller.py`. The local `scripts/hold_poller.py` stopgap is slated for deletion in the submodule conversion. |
+| ~`caddy-login`/`caddy-poller`/`caddy-discover`~ | **removed** — canonical implementations live in the parent's `agents/tools/{manual_login,discover_sites}.py` and `agents/pollers/hold_poller.py`. The local `scripts/hold_poller.py` stopgap has been deleted (commit b4005de); run the parent's via `make poller-local` from `<parent>/`. |
 
 Most long-running pipelines support `--loop` and `--interval`.
 
@@ -210,7 +210,7 @@ Shared helpers for `mcp_servers/browser_server.py` and `src/agents/html_fetchers
 - Commit specific files by name; never `add -A` / `add .`.
 - Commit messages: short, present-tense, scoped — `fix(inbox_triage):`, `feat(span_validator):`, `chore(api_client):`. **No `Co-Authored-By` footer**.
 - Lint + test before push: `make ci`.
-- Push: `git push origin feature/<concern>:feature/<concern>` (explicit refspec, once remote lands during submodule conversion).
+- Push: `git push origin feature/<concern>:feature/<concern>` (explicit refspec). After the PR merges, parent's `cc-orchestrator` bumps the `automation/` submodule pin against the new `main` HEAD SHA.
 - Never commit `notes.org`, `.env*`, `secrets.yml` (gitignored — leave them that way; don't `git rm --cached`).
 
 ## Conventions worth knowing
