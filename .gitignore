@@ -15,3 +15,6 @@ dist/
 
 # local-only org-mode notes — never commit (cc-auto memory: notes_local_only)
 notes.org
+
+# runtime state — logs, mongo data volume, anything CADDY_HOME/var/
+var/
