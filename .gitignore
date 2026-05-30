@@ -9,3 +9,6 @@ dist/
 *.egg-info/
 .logfire/
 .claude/
+
+# personal scratch files
+.ok
