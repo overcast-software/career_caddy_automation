@@ -29,6 +29,108 @@ Rules:
 - Map every background/theme combo before implementing color changes. Plan CSS across all contexts first.
 - Async belongsTo proxy: =model.question.content.content= (double =.content=) needed for resolution.
 
+* DONE Phase 1 — repo-side prep for =automation/= submodule conversion :shared-contract:
+CLOSED: [2026-05-30 Sat]
+:PROPERTIES:
+:NOTES: notes.org/Promoting cc_auto → automation/ — first-class submodule [2026-05-30]
+:OWNER: cc-auto
+:BLOCKS: parent-side Phase 2+ (=git submodule add= at =automation/=)
+:END:
+
+Parent has decided cc_auto becomes the fourth submodule at path
+=automation/= (alongside =api/= / =frontend/= / =agents/=). Full
+direction in =notes.org=. Before parent can =git submodule add=
+anything, cc_auto needs to be in shippable shape. Sub-items below
+are the cc-auto agent's Phase 1 deliverables.
+
+** DONE 1.1 — Sweep uncommitted working-tree state
+CLOSED: [2026-05-30 Sat]
+:PROPERTIES:
+:STARTED:
+:END:
+
+Per the standing direction "don't piggyback unrelated changes":
+group existing uncommitted WIP by concern, ship as discrete feature
+branches → main. Don't let the conversion absorb miscellaneous
+in-flight work. =git status -s= → group → branch per concern.
+
+** DONE 1.2 — Confirm gitflow
+CLOSED: [2026-05-30 Sat]
+:PROPERTIES:
+:STARTED:
+:END:
+
+feature/* → main, no develop. Confirm against current repo state.
+If the local config or =CLAUDE.md= references a develop branch
+anywhere, fix.
+
+** DONE 1.3 — CI entry point
+CLOSED: [2026-05-30 Sat]
+:PROPERTIES:
+:STARTED:
+:END:
+
+Parent's Dagger pipeline will call into cc_auto for lint + test.
+Provide a single-entry-point command — either a =Makefile= target
+or =scripts/ci.sh= — that runs:
+
+- =uv run ruff check src/ tests/= (lint)
+- =uv run pytest tests/= (tests)
+
+If both are already invocable as a single command, document it in
+=CLAUDE.md=. Otherwise add the wrapper.
+
+** DONE 1.4 — Refresh =CLAUDE.md=
+CLOSED: [2026-05-30 Sat]
+:PROPERTIES:
+:STARTED:
+:END:
+
+cc_auto's =CLAUDE.md= documents the architecture for sub-agents.
+Confirm it describes: email pipeline (=scripts/inbox_triage.py= +
+=src/email_source/= + =src/email_classifier/=), caddy-web copilot,
+A2A orchestrator, the HTTP-only boundary
+(=CC_API_BASE_URL= / =CC_MCP_URL= / =CC_API_TOKEN=). Cross-link to
+the parent =CLAUDE.md=. Drop any "standalone sibling repo, not a
+submodule" language — that's the soon-to-be-stale framing.
+
+** DONE 1.5 — Update =~/.claude/agents/cc-auto.md= description
+CLOSED: [2026-05-30 Sat]
+:PROPERTIES:
+:STARTED:
+:END:
+
+The cc-auto agent description currently says "cc_auto is a
+standalone sibling repo, not a submodule." Flip that paragraph —
+post-conversion, cc_auto is reachable at =automation/= within the
+parent worktree. Update the trigger conditions if needed.
+
+** DONE 1.6 — Disposition of =scripts/hold_poller.py=
+CLOSED: [2026-05-30 Sat]
+:PROPERTIES:
+:STARTED:
+:END:
+
+cc_auto's local =scripts/hold_poller.py= (commit 21dba4f) was a
+stopgap. After conversion, parent's =agents/pollers/hold_poller.py=
+is canonical (and itself retires in parent's queue-migration
+Phase 4). Decide: delete the cc_auto copy now (Phase 1) or leave
+until parent's Phase 4 lands. Lean: delete now so the conversion
+diff is clean. Document the migration path for any users running
+the cc_auto copy.
+
+** DONE 1.7 — Ack back to parent
+CLOSED: [2026-05-30 Sat]
+:PROPERTIES:
+:STARTED:
+:END:
+
+When 1.1-1.6 are done, append a fresh =:shared-contract:= section
+to =notes.org= titled "Phase 1 complete — ready for parent
+submodule-add". Parent's cc-orchestrator picks up the signal and
+starts Phase 2 (=git submodule add= + =.gitmodules= update + parent
+=CLAUDE.md= refresh + Dagger functions).
+
 * STRT how can we prevent these same job links
 :LOGBOOK:
 - Note taken on [2026-04-20 Mon 21:07] \\
