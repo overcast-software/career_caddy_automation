@@ -1,0 +1,39 @@
+# cc_auto sidecar services.
+#
+# Brings up MongoDB as the observability store for caddy-inbox /
+# caddy-trace-email / future link-traversal pipelines. The cc_auto
+# Python entry points run host-side (they need notmuch + a real
+# browser + the user's .env), so this compose file is *just* the
+# data plane.
+#
+# Usage:
+#   docker compose up -d mongo            # start Mongo for local dev
+#   docker compose ps                     # check status
+#   docker compose logs -f mongo          # tail
+#   docker compose down                   # stop, preserve data volume
+#
+# Metabase: see notes.org -> Phase A4. We point the existing
+# metabase.careercaddy.online instance at this Mongo over Tailscale;
+# we don't ship a Metabase sidecar from cc_auto.
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: cc_auto_mongo
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:27017:27017"
+    # Named volume (not a bind-mount) avoids the root-owned-host-dir
+    # footgun the bind-mount form has — the volume is managed by Docker
+    # and the host's `var/` stays a normal user-owned tree.
+    volumes:
+      - cc_auto_mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  cc_auto_mongo_data:

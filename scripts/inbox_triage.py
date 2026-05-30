@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import subprocess
+from dataclasses import dataclass, field
 
 from src.agents.email_agents import (
     FollowupResult,
@@ -50,6 +51,12 @@ from src.client.api_client import (
 )
 from src.client.toolset import CareerCaddyDeps
 from src.email_source import EmailMeta, EmailSource, make_source
+from src.observability import (
+    classify_exception,
+    finish_run,
+    record_email,
+    start_run,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -60,6 +67,20 @@ logger = logging.getLogger(__name__)
 
 
 CONFIDENCE_FLOOR = 0.6
+
+
+@dataclass
+class TriageOutcome:
+    """What ``_triage_one`` reports back to the caller for observability.
+
+    The previous shape (single string) was good enough for the in-memory
+    counter, but Phase A's Mongo writer also wants the per-email tags-added
+    diff so it lands in ``triage_emails``. Keeping both fields on one
+    dataclass keeps the call site readable.
+    """
+
+    outcome: str
+    tags_added: list[str] = field(default_factory=list)
 
 
 def _caddy_deps() -> CareerCaddyDeps:
@@ -321,9 +342,10 @@ async def _triage_one(
     api: ApiClient,
     deps: CareerCaddyDeps,
     created_acc: list[dict] | None = None,
-) -> str:
+) -> TriageOutcome:
     """Drive a single email through whichever stages it still needs. Returns
-    a short status string for the summary counter.
+    the outcome bucket + tags-added diff for the summary counter and the
+    Mongo per-email record.
 
     Logs a per-email outcome line in `finally` so every email — even the
     ones that fall through to "already_done" — produces one line that
@@ -334,8 +356,12 @@ async def _triage_one(
     """
     email_id = meta.id
     initial_tags = set(meta.tags)
-    tags = set(initial_tags)
+    tags: set[str] = set(initial_tags)
     final_outcome = "already_done"
+
+    def _result() -> TriageOutcome:
+        return TriageOutcome(outcome=final_outcome, tags_added=sorted(tags - initial_tags))
+
     try:
         # Stage 1 — classify (only if not yet evaluated).
         if "evaluated" not in tags:
@@ -346,7 +372,7 @@ async def _triage_one(
             logger.info("[%s] %s  %s", "JOB" if is_job else "---", email_id, meta.subject)
             if not is_job:
                 final_outcome = "not_job"
-                return final_outcome
+                return _result()
 
         # Stage 2 — refine (only job-related, only if not yet refined).
         if "job_post" in tags and "refined" not in tags:
@@ -386,9 +412,9 @@ async def _triage_one(
                     await source.add_tags(meta.thread_id, ["caddy_processed"])
                     tags.add("caddy_processed")
                     final_outcome = "processed"
-                    return final_outcome
+                    return _result()
                 final_outcome = "update_failed"
-                return final_outcome
+                return _result()
             logger.info(
                 "  no confident application match for %s (conf=%.2f): %s",
                 email_id,
@@ -396,7 +422,7 @@ async def _triage_one(
                 res.notes[:120],
             )
             final_outcome = "unmatched"
-            return final_outcome
+            return _result()
 
         # Stage 4 — inline-post extractor (direct-solicitation emails: JD inline,
         # no scrapeable URL). Creates a JobPost with link=NULL and
@@ -413,11 +439,11 @@ async def _triage_one(
                     res.evidence[:120],
                 )
                 final_outcome = "inline_unmatched"
-                return final_outcome
+                return _result()
             inline_outcome = await _create_inline_job_post(api, res, created_acc)
             if inline_outcome is None:
                 final_outcome = "inline_failed"
-                return final_outcome
+                return _result()
             await source.add_tags(meta.thread_id, ["caddy_processed"])
             tags.add("caddy_processed")
             logger.info(
@@ -428,7 +454,7 @@ async def _triage_one(
                 res.confidence,
             )
             final_outcome = f"inline_{inline_outcome}"
-            return final_outcome
+            return _result()
 
         # Stage 5 — URL-extract → create JobPost(s) for the default new_post case
         # (a job-board notification with one or more scrapeable URLs, neither a
@@ -448,7 +474,7 @@ async def _triage_one(
             except RuntimeError as exc:
                 logger.warning("  stage5: load_email_text failed for %s: %s", email_id, exc)
                 final_outcome = "new_load_failed"
-                return final_outcome
+                return _result()
             extracted = await extract_job_urls(text)
             if not extracted.job_urls:
                 await source.add_tags(meta.thread_id, ["caddy_processed"])
@@ -459,7 +485,7 @@ async def _triage_one(
                     extracted.reasoning[:120],
                 )
                 final_outcome = "new_no_urls"
-                return final_outcome
+                return _result()
             url_outcome = await _create_posts_from_urls(api, extracted.job_urls, created_acc)
             if not url_outcome["failed"]:
                 await source.add_tags(meta.thread_id, ["caddy_processed"])
@@ -472,15 +498,15 @@ async def _triage_one(
             )
             if url_outcome["failed"]:
                 final_outcome = "new_failed"
-                return final_outcome
+                return _result()
             if url_outcome["created"]:
                 final_outcome = "new_created"
-                return final_outcome
+                return _result()
             final_outcome = "new_duplicate"
-            return final_outcome
+            return _result()
 
         final_outcome = "already_done"
-        return final_outcome
+        return _result()
     finally:
         added = sorted(tags - initial_tags)
         diff = ",".join(added) if added else "—"
@@ -507,11 +533,20 @@ async def run_once(limit: int, backend: str | None, days_back: int) -> None:
     api = _api_client()
     deps = _caddy_deps()
 
+    # Phase A1: open a Mongo run doc so every email this pass lands with
+    # a foreign-key into one row in `triage_runs`. start_run returns None
+    # on Mongo outage; downstream record_email/finish_run tolerate that.
+    run_id = start_run(backend)
+
     counters: dict[str, int] = {}
     created_acc: list[dict] = []
     for meta in pending:
+        outcome_bucket = "already_done"
+        tags_added: list[str] = []
+        exception_class: str | None = None
+        network_failure = False
         try:
-            outcome = await _triage_one(
+            triage = await _triage_one(
                 meta,
                 source,
                 classify_agent,
@@ -522,10 +557,25 @@ async def run_once(limit: int, backend: str | None, days_back: int) -> None:
                 deps,
                 created_acc=created_acc,
             )
+            outcome_bucket = triage.outcome
+            tags_added = triage.tags_added
         except Exception as exc:
             logger.exception("Triage raised for %s: %s", meta.id, exc)
-            outcome = "error"
-        counters[outcome] = counters.get(outcome, 0) + 1
+            outcome_bucket, network_failure = classify_exception(exc)
+            exception_class = type(exc).__name__
+        finally:
+            record_email(
+                run_id,
+                meta.id,
+                meta.subject,
+                outcome_bucket,
+                tags_added,
+                exception_class=exception_class,
+                network_failure=network_failure,
+            )
+        counters[outcome_bucket] = counters.get(outcome_bucket, 0) + 1
+
+    finish_run(run_id, total_emails=len(pending), counters=counters)
 
     summary = ", ".join(f"{k}={v}" for k, v in sorted(counters.items()))
     logger.info("Done: %s", summary)
