@@ -131,6 +131,76 @@ submodule-add". Parent's cc-orchestrator picks up the signal and
 starts Phase 2 (=git submodule add= + =.gitmodules= update + parent
 =CLAUDE.md= refresh + Dagger functions).
 
+* SHIPPED Phase A1 + A2 — Mongo observability + rotating file log :shared-contract:
+CLOSED: [2026-05-30 Sat]
+:PROPERTIES:
+:OWNER: cc-auto
+:NOTES: notes.org/Roadmap/Phase A
+:PRS: overcast-software/career_caddy_automation#1 (CLAUDE.md path refs), #2 (observability)
+:HEAD: 6a6efa0740be439d95cd2009ff19a9c03f178f29
+:END:
+
+caddy-inbox now writes structured per-run + per-email observability
+into Mongo. src/observability/ package + pymongo dep; src/db.py
+(orphan SQLite shim) deleted in the same SHA. docker-compose.yml
+ships a Mongo 7 sidecar with a named volume. lib/observability.py
+attaches a RotatingFileHandler under $CADDY_LOG_DIR/<service>.log
+(opt-out via CADDY_FILE_LOG=0). End-to-end verified against the
+user's notmuch mailbox: triage_runs + triage_emails docs land with
+matching run_id; tags_added tracks the per-pass diff.
+
+Followups:
+- A4 (Metabase wiring) is operator-side — point the existing
+  metabase.careercaddy.online at the Mongo sidecar over Tailscale
+  and build the four panels per notes.org/Phase A4.
+- A5 (OpenAI socket leak in agent_factory.py) — separate PR.
+
+* WAIT A4 — Wire cc_auto Mongo into metabase.careercaddy.online :infra:
+:PROPERTIES:
+:OWNER: operator (diycloud)
+:DEPENDS_ON: cc_auto stack running on pibu / home-server with the Mongo sidecar exposed on the tailnet
+:END:
+
+Phase A1+A2 are merged; the Mongo sidecar runs locally via
+=docker compose up -d mongo= and the observability package writes
+to it. To get the user's stated "I want to see this data in
+metabase":
+
+1. Run cc_auto's stack on the host that Metabase reaches over the
+   tailnet (pibu, or wherever the user wants the canonical writer).
+   The local laptop run was the verification — for the dashboard to
+   be useful, the writer needs a stable home.
+2. In Metabase admin, add a Mongo data source:
+   - URI: =mongodb://<host>.<tailnet>:27017/cc_auto= (or the compose
+     network address if Metabase shares the same docker-compose).
+   - User: read-only =cc_auto_ro= provisioned via =db.createUser=
+     against the cc_auto db (mirror the =metabase_ro= pattern in
+     =diycloud/index.org:300=).
+3. Build the four panels per =notes.org/Phase A4=:
+   1. Triage runs last 24h (aggregate on =triage_runs=).
+   2. Outcome breakdown last 7d (aggregate on =triage_emails.outcome=).
+   3. Skipped duplicates with confidence > 0.8 last 24h
+      (=skipped_duplicates= filter).
+   4. Network failures last 24h with =exception_class= breakdown
+      (=triage_emails.network_failure: true= grouped by
+      =exception_class=).
+
+cc_auto-side this is shippable as-is; the gating action is operator.
+
+* TODO A5 — Cache one openai.AsyncOpenAI() in agent_factory.py
+:PROPERTIES:
+:OWNER: cc-auto
+:NOTES: notes.org/Roadmap/Phase A5
+:END:
+
+Per the live-state survey in =notes.org=: caddy-inbox accumulates
+CLOSE_WAIT sockets to api.openai.com because each Agent build
+constructs a fresh =AsyncOpenAI()= without closing. Fix in
+=src/agents/agent_factory.py= — cache one module-level client and
+inject via =OpenAIProvider(openai_client=...)= so all Agents share
+one pool for the process lifetime. Verify: =ss -tnp | grep -c
+"pid=$(pgrep caddy-inbox)"= stays <10 after several runs.
+
 * STRT how can we prevent these same job links
 :LOGBOOK:
 - Note taken on [2026-04-20 Mon 21:07] \\
