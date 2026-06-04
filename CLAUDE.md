@@ -1,6 +1,27 @@
-# CLAUDE.md
+# automation/CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code when working in `automation/` (formerly
+`career_caddy_automation` sibling repo, promoted to first-class
+submodule 2026-05-30). This file is a pointer; the canonical state
+lives in `automation/notes.org`.
+
+## Source of truth — read FIRST
+
+- **`automation/notes.org`** (drill via `claude/ca-*`) — email
+  triage pipeline, inbox patterns, caddy-web copilot conventions,
+  A2A orchestrator boundary, HTTP-only contract with the api.
+- **`automation/todo.org`** (drill via `claude/ca-todo-*`) —
+  automation's own autonomous-workflow todo. Parent
+  `careercaddy/todo.org` is the cross-cutting board; this one is
+  for automation's internal work.
+
+Boot sequence (every cc-auto session):
+
+```
+emacsclient --eval '(claude/ca-help)'
+emacsclient --eval '(claude/ca-notes-toc)'
+emacsclient --eval '(claude/ca-todo-toc)'
+```
 
 ## Project
 
