@@ -166,6 +166,9 @@ def build_agent_mcp(mcp_url: str) -> Agent:
 
     server = MCPServerStreamableHTTP(
         url=mcp_url,
+        # MCP public_server.verify_token() expects Bearer + forwards to
+        # api/v1/me/. This is the MCP transport's auth, not the api's;
+        # do NOT switch to Api-Key here.
         headers={"Authorization": f"Bearer {token}"},
     )
     toolsets: list = [server]
