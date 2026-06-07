@@ -201,10 +201,13 @@ inject via =OpenAIProvider(openai_client=...)= so all Agents share
 one pool for the process lifetime. Verify: =ss -tnp | grep -c
 "pid=$(pgrep caddy-inbox)"= stays <10 after several runs.
 
-* STRT B3 — Catchall email-forward poller :feature:
+* DONE B3 — Catchall email-forward poller :feature:
+CLOSED: [2026-06-07]
 :PROPERTIES:
 :OWNER: cc-auto
-:NOTES: notes.org/Roadmap/Plan/Phase B/B3
+:NOTES: notes.org/Architecture/B3 catchall email-forward poller — shipped 2026-06-07
+:PRS: overcast-software/career_caddy_automation#7
+:HEAD: 59c7bdb8e6c591b2407903a4fb264642393d1639
 :DEPENDS_ON: api PRs #149 (source=email-forward + forwarded_via_address), #150 (discover_for_user_id + staff RBAC), #151 (username catchall validator) — all SHIPPED in prod
 :CREATED: [2026-06-07]
 :END:
