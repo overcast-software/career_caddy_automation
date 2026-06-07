@@ -56,6 +56,12 @@ def get_db():
     db.triage_runs.create_index([("started_at", ASCENDING)])
     db.skipped_duplicates.create_index([("run_id", ASCENDING)])
     db.skipped_duplicates.create_index([("email_id", ASCENDING)])
+    # forward_audit — catchall poller (B3). The quota query filters on
+    # (resolved_user_id, recorded_at) and aggregations group on
+    # forwarded_to_localpart, so index both.
+    db.forward_audit.create_index([("email_id", ASCENDING)])
+    db.forward_audit.create_index([("resolved_user_id", ASCENDING), ("recorded_at", ASCENDING)])
+    db.forward_audit.create_index([("forwarded_to_localpart", ASCENDING)])
 
     logger.debug("mongo connected: uri=%s db=%s", uri, db_name)
     return db
