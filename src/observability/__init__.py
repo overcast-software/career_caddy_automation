@@ -12,6 +12,11 @@ fire-and-forget operator-side; we never let an observability failure
 crash the hot path (every domain API catches ``PyMongoError``).
 """
 
+from src.observability.forward_audit import (
+    FORWARD_OUTCOMES,
+    count_forwards_today,
+    record_forward_audit,
+)
 from src.observability.triage_store import (
     classify_exception,
     finish_run,
@@ -21,9 +26,12 @@ from src.observability.triage_store import (
 )
 
 __all__ = [
+    "FORWARD_OUTCOMES",
     "classify_exception",
+    "count_forwards_today",
     "finish_run",
     "record_email",
+    "record_forward_audit",
     "record_skipped_duplicate",
     "start_run",
 ]

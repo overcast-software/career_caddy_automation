@@ -201,6 +201,63 @@ inject via =OpenAIProvider(openai_client=...)= so all Agents share
 one pool for the process lifetime. Verify: =ss -tnp | grep -c
 "pid=$(pgrep caddy-inbox)"= stays <10 after several runs.
 
+* STRT B3 — Catchall email-forward poller :feature:
+:PROPERTIES:
+:OWNER: cc-auto
+:NOTES: notes.org/Roadmap/Plan/Phase B/B3
+:DEPENDS_ON: api PRs #149 (source=email-forward + forwarded_via_address), #150 (discover_for_user_id + staff RBAC), #151 (username catchall validator) — all SHIPPED in prod
+:CREATED: [2026-06-07]
+:END:
+
+cc_auto-side of Phase B3: pulls UNSEEN messages from the catchall IMAP
+mailbox, resolves the =<localpart>@careercaddy.online= recipient to
+a user via =GET /api/v1/users/?filter[username]=<local-part>=, runs
+the existing =url_extractor= + =span_validator= over the body, and
+POSTs JobPosts with =source="email-forward"=,
+=forwarded_via_address=, and =discover_for_user_id=.
+
+Per the standing rule =feedback_inbox_no_auto_scrape=: NO
+=create_scrape= call; the user starts scrapes from the UI.
+
+Files (NEW unless noted):
+- =src/pollers/__init__.py=, =src/pollers/email_catchall.py=
+- =src/email_source/imap_source.py= (filled — added
+  =CatchallImapClient= + =parse_catchall_message=; the EmailSource
+  Protocol stubs still raise NotImplementedError for inbox_triage)
+- =src/observability/forward_audit.py=
+- =src/observability/__init__.py= (exports record_forward_audit +
+  count_forwards_today + FORWARD_OUTCOMES)
+- =src/observability/mongo_client.py= (indexes for forward_audit)
+- =src/client/api_client.py= (=forwarded_via_address= +
+  =discover_for_user_id= params on both create_job_post helpers;
+  =email-forward= added to =_EMAIL_TIER_SOURCES=; new
+  =find_user_by_username= helper)
+- =pyproject.toml= (=caddy-catchall= entry point + ruff E402
+  per-file ignore for =src/pollers/*=)
+
+Tests (NEW):
+- =tests/test_api_client_forward_provenance.py=
+- =tests/test_email_catchall_processor.py=
+- =tests/test_imap_source_catchall_parser.py=
+- =tests/test_observability_forward_audit.py=
+
+Bounce path (unknown localpart / over quota): logged + audited but
+NOT relayed in this initial cut. SMTP submission needs the
+operator-side MTA config (per notes.org/Phase B2); when ready, add a
+=src/pollers/email_catchall_bounce.py= helper and wire it into the
+unknown_localpart + over_quota outcome branches. Until then, the
+unprocessed messages stay UNSEEN on the IMAP mailbox so the operator
+can review them, and =forward_audit= docs explain why.
+
+Verification (operator-side, post-merge):
+- Forward a JD email to =<your-username>@careercaddy.online=.
+- =uv run caddy-catchall --once --limit 5=.
+- Confirm: new JobPost on =/jobs=, =forwarded_via_address= visible
+  on its JobPostDiscovery, =forward_audit= doc in Mongo with
+  =outcome=created=.
+- Repeat with a deliberately unknown localpart — outcome should be
+  =unknown_localpart= and no JobPost.
+
 * STRT how can we prevent these same job links
 :LOGBOOK:
 - Note taken on [2026-04-20 Mon 21:07] \\
