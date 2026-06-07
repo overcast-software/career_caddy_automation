@@ -332,3 +332,47 @@ section D, plus this repo's notes:598-777.
 * PROJ job-application update
 some emails contain next steps.  right now we just tag that a "job_post" and then the next process looks for links.  ideally the agent can look up which job application the email belongs to and update job-application-status.  I don't know if that tool exists.
 I want to be able to toggle the agent to, if it has no reasonable job-post or job-application, make a new record to compensate for historical data not being in the system.  New correspondence emails from recruiters could also spawn a new job-post.  follow up emails are read and checked if the status was already marked and update if not.
+
+* TODO Follow diycloud conventions for mongo deployment :infra:
+:PROPERTIES:
+:CREATED: [2026-06-02]
+:RELATED_TO: A4 — Wire cc_auto Mongo into metabase.careercaddy.online
+:END:
+
+Cross-cutting note from a diycloud session 2026-06-02. A1+A2 Mongo
+observability is SHIPPED; A4 (wire into metabase) is the active mongo
+work. This entry flags diycloud-side conventions the A4 deployment
+should follow.
+
+Current state (=docker-compose.yml= at the cc_auto repo root):
+
+- Image pinned to =mongo:7= (good — minor pin, not =:latest=).
+- Listens on =127.0.0.1:27017= only (good — workstation, not exposed).
+- Named volume =cc_auto_mongo_data=, not a bind-mount inside the
+  syncthing tree (good — no divergent-DB-state across syncthing peers).
+- *No auth enabled.* This is the gap. Even on loopback, follow the
+  =diycloud/stacks/mule/firefly/= discipline: ship a =mongo-init.js=
+  with =db.createUser= on first start, and a separate =cc_auto_ro=
+  read-only user for the metabase data source.
+
+Remaining actions to ship A4 the diycloud way:
+
+1. Add =deploy/mongo-init.js= bound into =/docker-entrypoint-initdb.d/=
+   that creates:
+   - =cc_auto= rw user for the cc_auto services (consumed by
+     =src/observability/mongo_client.py= via =MONGODB_URI=).
+   - =cc_auto_ro= read-only user for metabase (mirrors the
+     =metabase_ro= pattern at =diycloud/stacks/mule/firefly/=).
+2. Document the cross-host story in cc_auto's =notes.org= once A4
+   lands: which host runs the canonical writer (pibu vs home-server
+   vs racknerd), the URI metabase uses (tailnet or compose-network),
+   and the rebuild-recovery procedure if the named volume is wiped.
+3. When metabase is the active data source, gate the =cc_auto_ro=
+   user on metabase's tailnet IP (mongo =authenticationRestrictions=
+   on the user definition) so the credentials are unusable from
+   anywhere else.
+
+(Originally drafted from a stale pre-submodule checkout that observed
+"no docker-compose.yml at the repo root"; in the canonical submodule
+the compose file is present and follows three of the four diycloud
+conventions already. Auth is the one gap left.)
