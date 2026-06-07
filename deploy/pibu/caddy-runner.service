@@ -1,0 +1,46 @@
+[Unit]
+Description=Career Caddy scrape runner (Camoufox, attended) on pibu
+Documentation=file:%h/Projects/career_caddy_automation/deploy/pibu/README.md
+After=graphical-session.target network-online.target
+Wants=network-online.target
+PartOf=graphical-session.target
+
+# The runner needs an X/Wayland display because Camoufox runs attended
+# (one resident window, ephemeral tabs per scrape). On pibu, wayvnc
+# provides the display via Xwayland on :0.
+ConditionPathExists=%h/.Xauthority
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/environment.d/career-caddy.conf
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=%h/.Xauthority
+
+WorkingDirectory=%h/Projects/career_caddy_agents
+ExecStart=%h/.local/bin/uv run python -m runners.scrape_runner --engine camoufox --attended
+
+# Camoufox/Firefox keeps the resident window open for the lifetime of
+# the runner; SIGTERM closes it cleanly. Give it room to drain an
+# in-flight scrape before SIGKILL.
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+# pibu has ~900 MB RAM total; cap the runner so a runaway Camoufox
+# process can't OOM the box. Soft limit — systemd will MemoryHigh
+# throttle before killing.
+MemoryHigh=600M
+MemoryMax=750M
+
+Restart=on-failure
+RestartSec=30
+# Don't restart-loop if the auth token is bad / api is down.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=caddy-runner
+
+[Install]
+WantedBy=graphical-session.target
