@@ -28,6 +28,19 @@ Outcomes — these are the buckets dashboards group by:
 The poller emits at most one ``forward_audit`` doc per catchall message
 per pass — so daily-count aggregations on
 ``forwarded_to_localpart`` give the quota numbers.
+
+Known-good auto-scrape fields (opt-in via
+``CADDY_FORWARD_AUTO_SCRAPE_KNOWN_GOOD``; default OFF) make the
+per-message scrape decision observable:
+
+- ``scrape_created`` — True when the poller created a ``hold`` Scrape
+  for a freshly-created JobPost whose host is a known-good scrape
+  domain. False on every other path (flag off, not known-good, dedupe,
+  fetch error).
+- ``scrape_id`` — the created Scrape's id (the first one, when a
+  message yielded multiple created posts), else None.
+- ``profile_tier`` — the ScrapeProfile readiness tier that gated the
+  scrape, else None.
 """
 
 from __future__ import annotations
@@ -85,6 +98,9 @@ def record_forward_audit(
     bounce_reason: str | None = None,
     subject: str | None = None,
     sender: str | None = None,
+    scrape_created: bool = False,
+    scrape_id: int | None = None,
+    profile_tier: str | None = None,
     extras: dict[str, Any] | None = None,
 ) -> None:
     """Insert one ``forward_audit`` doc.
@@ -116,6 +132,9 @@ def record_forward_audit(
             "bounce_reason": bounce_reason,
             "subject": subject,
             "sender": sender,
+            "scrape_created": scrape_created,
+            "scrape_id": scrape_id,
+            "profile_tier": profile_tier,
             "recorded_at": _now(),
         }
         if extras:

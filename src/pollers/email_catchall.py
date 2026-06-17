@@ -9,8 +9,20 @@ catchall-specific attributes ``forwarded_via_address`` +
 ``discover_for_user_id`` (api PRs #149/#150/#151, 2026-06).
 
 Per the standing cc_auto rule (``feedback_inbox_no_auto_scrape``): the
-poller creates JobPost rows ONLY. It never calls ``create_scrape``;
-the user initiates scrapes from the UI on posts they want pulled.
+poller creates JobPost rows ONLY and the user initiates scrapes from
+the UI on posts they want pulled.
+
+The ONE authorized exception is opt-in and narrow: when
+``CADDY_FORWARD_AUTO_SCRAPE_KNOWN_GOOD`` is enabled AND a freshly-created
+JobPost's link points at a *known-good* scrape domain (per the api's
+per-domain readiness signal, ScrapeProfile filter endpoint, api PR
+#185), the poller creates a single ``hold`` Scrape for that post so the
+scrape runner pulls it. The flag is OFF by default, so production
+behavior is unchanged until an operator explicitly enables it. Every
+failure mode (flag off, host not known-good, profile fetch error,
+dedupe/quota-skip) fails safe to JobPost-only — auto-scrape never
+blocks or fails JobPost discovery, and the decision is per-URL and
+independent.
 
 Per-user-per-day quota check + per-message ``forward_audit`` writes
 land in Mongo. The poller fails open on Mongo outage — every call
@@ -50,6 +62,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 from src.agents.span_validator import filter_span_atomic
 from src.agents.url_extractor import extract_job_urls
@@ -57,6 +70,8 @@ from src.client.api_client import (
     ApiClient,
     create_job_post_minimal,
     create_job_post_with_company_check,
+    create_scrape,
+    fetch_profile_readiness,
     find_user_by_username,
 )
 from src.email_source.imap_source import CatchallImapClient, CatchallMessage
@@ -94,6 +109,10 @@ class ProcessOutcome:
     created: int = 0
     deduped: int = 0
     failed: int = 0
+    # Known-good auto-scrape decision (opt-in; see _maybe_auto_scrape).
+    scrape_created: bool = False
+    scrape_id: int | None = None
+    profile_tier: str | None = None
 
 
 async def resolve_localpart(api: ApiClient, localpart: str) -> int | None:
@@ -148,6 +167,91 @@ def _interpret_post_response(raw: str, link: str | None) -> tuple[str, int | str
     if status_code == 200:
         return "deduped", post_id
     return "created", post_id
+
+
+def _forward_auto_scrape_enabled() -> bool:
+    """Opt-in gate for the known-good auto-scrape exception.
+
+    Default OFF. Mirrors the truthy-string contract of
+    ``scripts.process_tagged._auto_scrape_enabled`` so operators have one
+    mental model for both auto-scrape flags. When OFF (the production
+    default), the catchall poller stays JobPost-only — it never calls
+    ``create_scrape``.
+    """
+    return os.environ.get("CADDY_FORWARD_AUTO_SCRAPE_KNOWN_GOOD", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+async def _maybe_auto_scrape(
+    api: ApiClient,
+    *,
+    url: str,
+    job_post_id: int | str | None,
+) -> tuple[int | None, str | None]:
+    """Known-good auto-scrape decision for one freshly-created JobPost.
+
+    The DELIBERATE, user-authorized exception to
+    ``feedback_inbox_no_auto_scrape``: only when
+    ``CADDY_FORWARD_AUTO_SCRAPE_KNOWN_GOOD`` is enabled AND ``url``'s
+    hostname is a known-good scrape domain do we create a ``hold`` Scrape
+    for the post so the scrape runner pulls it.
+
+    Returns ``(scrape_id, profile_tier)`` — ``scrape_id`` is non-None only
+    when a scrape was actually created; ``profile_tier`` carries the
+    readiness tier of the profile that gated the decision (or ``None``).
+
+    Fully fail-safe: flag off, missing post id, unparseable host, unknown
+    host, not-known-good, profile-fetch error, or scrape-create failure
+    all return without creating a scrape and never raise. Auto-scrape
+    must NEVER block or fail JobPost discovery.
+    """
+    if not _forward_auto_scrape_enabled():
+        return None, None
+    if job_post_id is None:
+        return None, None
+    try:
+        jp_id = int(job_post_id)
+    except (TypeError, ValueError):
+        return None, None
+    hostname = urlparse(url).hostname
+    if not hostname:
+        return None, None
+
+    try:
+        readiness = await fetch_profile_readiness(api, hostname)
+    except Exception as exc:  # fetch_profile_readiness is fail-safe, but belt-and-suspenders.
+        logger.warning("catchall: profile readiness fetch raised for %s: %s", hostname, exc)
+        return None, None
+    if readiness is None:
+        return None, None
+    is_known_good, tier = readiness
+    if not is_known_good:
+        return None, tier
+
+    try:
+        raw = await create_scrape(api, url=url, job_post_id=jp_id, status="hold")
+        resp = json.loads(raw)
+    except Exception as exc:
+        logger.warning("catchall: auto-scrape create raised for post %s: %s", jp_id, exc)
+        return None, tier
+    if not resp.get("success"):
+        logger.warning(
+            "catchall: auto-scrape create failed for post %s: %s", jp_id, resp.get("error")
+        )
+        return None, tier
+
+    scrape_resource = (resp.get("data") or {}).get("data") or {}
+    raw_id = scrape_resource.get("id")
+    try:
+        scrape_id = int(raw_id) if raw_id is not None else None
+    except (TypeError, ValueError):
+        scrape_id = None
+    logger.info("[FWD-SCRAPE] post=%s host=%s tier=%s scrape=%s", jp_id, hostname, tier, scrape_id)
+    return scrape_id, tier
 
 
 async def process_one(
@@ -213,6 +317,9 @@ async def process_one(
     deduped = 0
     failed = 0
     first_post_id: int | str | None = None
+    scrape_created = False
+    first_scrape_id: int | None = None
+    first_scrape_tier: str | None = None
     for link in safe_links:
         desc = link.description or None
         try:
@@ -254,6 +361,14 @@ async def process_one(
                 link.company or "—",
                 post_id,
             )
+            # Opt-in known-good auto-scrape — created posts only, never
+            # dedupes. Per-URL and fail-safe; defaults to JobPost-only.
+            s_id, s_tier = await _maybe_auto_scrape(api, url=link.url, job_post_id=post_id)
+            if s_id is not None:
+                scrape_created = True
+                if first_scrape_id is None:
+                    first_scrape_id = s_id
+                    first_scrape_tier = s_tier
         elif outcome == "deduped":
             deduped += 1
             if first_post_id is None:
@@ -284,6 +399,9 @@ async def process_one(
         created=created,
         deduped=deduped,
         failed=failed,
+        scrape_created=scrape_created,
+        scrape_id=first_scrape_id,
+        profile_tier=first_scrape_tier,
     )
 
 
@@ -305,6 +423,9 @@ def _audit_msg(msg: CatchallMessage, user_id: int | None, outcome: ProcessOutcom
         bounce_reason=outcome.bounce_reason,
         subject=msg.subject,
         sender=msg.sender,
+        scrape_created=outcome.scrape_created,
+        scrape_id=outcome.scrape_id,
+        profile_tier=outcome.profile_tier,
         extras={
             "uid": msg.uid,
             "mailbox": msg.mailbox,

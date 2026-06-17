@@ -291,3 +291,187 @@ class TestProcessOne:
         assert out.outcome == "post_failed"
         assert out.failed == 1
         assert out.created == 0
+
+
+# ---------------------------------------------------------------------------
+# Known-good auto-scrape exception (opt-in: CADDY_FORWARD_AUTO_SCRAPE_KNOWN_GOOD)
+# ---------------------------------------------------------------------------
+
+
+def _scrape_response(scrape_id: int | str = "555") -> str:
+    return json.dumps(
+        {
+            "success": True,
+            "data": {"data": {"id": str(scrape_id), "type": "scrape", "attributes": {}}},
+            "status_code": 201,
+        }
+    )
+
+
+@pytest.fixture
+def created_post_api():
+    """An api MagicMock whose POST always returns a fresh-create (201)."""
+    api = MagicMock()
+    api.post = AsyncMock(return_value=_post_response(status_code=201, post_id=42))
+    api.get = AsyncMock(return_value=json.dumps({"success": True, "data": {"data": []}}))
+    return api
+
+
+class TestForwardAutoScrape:
+    def test_known_good_flag_on_creates_hold_scrape(
+        self, stub_pipeline, created_post_api, monkeypatch
+    ):
+        """known-good host + flag ON → create_scrape called once with
+        status='hold' + the job_post_id; outcome carries scrape_created +
+        scrape_id + tier (the audit row's source-of-truth)."""
+        monkeypatch.setenv("CADDY_FORWARD_AUTO_SCRAPE_KNOWN_GOOD", "true")
+
+        async def fake_readiness(api, hostname):
+            assert hostname == "acme.com"
+            return (True, "verified")
+
+        scrape_calls = []
+
+        async def fake_create_scrape(api, **kwargs):
+            scrape_calls.append(kwargs)
+            return _scrape_response(555)
+
+        monkeypatch.setattr(cc, "fetch_profile_readiness", fake_readiness)
+        monkeypatch.setattr(cc, "create_scrape", fake_create_scrape)
+
+        out = asyncio.run(cc.process_one(created_post_api, _msg(), quota=100))
+
+        assert out.outcome == "created"
+        assert len(scrape_calls) == 1
+        assert scrape_calls[0]["status"] == "hold"
+        assert scrape_calls[0]["job_post_id"] == 42
+        assert scrape_calls[0]["url"] == "https://acme.com/j/1"
+        assert out.scrape_created is True
+        assert out.scrape_id == 555
+        assert out.profile_tier == "verified"
+
+    def test_known_good_flag_off_skips_scrape(self, stub_pipeline, created_post_api, monkeypatch):
+        """known-good host + flag OFF → no scrape; readiness never even
+        consulted; audit fields stay falsey."""
+        monkeypatch.delenv("CADDY_FORWARD_AUTO_SCRAPE_KNOWN_GOOD", raising=False)
+
+        readiness_calls = []
+        scrape_calls = []
+
+        async def fake_readiness(api, hostname):
+            readiness_calls.append(hostname)
+            return (True, "verified")
+
+        async def fake_create_scrape(api, **kwargs):
+            scrape_calls.append(kwargs)
+            return _scrape_response()
+
+        monkeypatch.setattr(cc, "fetch_profile_readiness", fake_readiness)
+        monkeypatch.setattr(cc, "create_scrape", fake_create_scrape)
+
+        out = asyncio.run(cc.process_one(created_post_api, _msg(), quota=100))
+
+        assert out.outcome == "created"
+        assert readiness_calls == []
+        assert scrape_calls == []
+        assert out.scrape_created is False
+        assert out.scrape_id is None
+        assert out.profile_tier is None
+
+    def test_not_known_good_flag_on_skips_scrape(
+        self, stub_pipeline, created_post_api, monkeypatch
+    ):
+        """not-known-good host + flag ON → no scrape, JobPost kept."""
+        monkeypatch.setenv("CADDY_FORWARD_AUTO_SCRAPE_KNOWN_GOOD", "1")
+
+        scrape_calls = []
+
+        async def fake_readiness(api, hostname):
+            return (False, "emerging")
+
+        async def fake_create_scrape(api, **kwargs):
+            scrape_calls.append(kwargs)
+            return _scrape_response()
+
+        monkeypatch.setattr(cc, "fetch_profile_readiness", fake_readiness)
+        monkeypatch.setattr(cc, "create_scrape", fake_create_scrape)
+
+        out = asyncio.run(cc.process_one(created_post_api, _msg(), quota=100))
+
+        assert out.outcome == "created"
+        assert out.job_post_id == "42"
+        assert scrape_calls == []
+        assert out.scrape_created is False
+
+    def test_profile_fetch_raises_keeps_jobpost(self, stub_pipeline, created_post_api, monkeypatch):
+        """profile fetch raises → no scrape, JobPost still recorded, no
+        exception escapes process_one."""
+        monkeypatch.setenv("CADDY_FORWARD_AUTO_SCRAPE_KNOWN_GOOD", "on")
+
+        scrape_calls = []
+
+        async def boom(api, hostname):
+            raise RuntimeError("api 500")
+
+        async def fake_create_scrape(api, **kwargs):
+            scrape_calls.append(kwargs)
+            return _scrape_response()
+
+        monkeypatch.setattr(cc, "fetch_profile_readiness", boom)
+        monkeypatch.setattr(cc, "create_scrape", fake_create_scrape)
+
+        out = asyncio.run(cc.process_one(created_post_api, _msg(), quota=100))
+
+        assert out.outcome == "created"
+        assert out.job_post_id == "42"
+        assert scrape_calls == []
+        assert out.scrape_created is False
+
+    def test_deduped_does_not_auto_scrape(self, stub_pipeline, monkeypatch):
+        """Quota interaction: dedupes (api 200) must never auto-scrape,
+        even with a known-good host + flag ON."""
+        monkeypatch.setenv("CADDY_FORWARD_AUTO_SCRAPE_KNOWN_GOOD", "true")
+
+        scrape_calls = []
+
+        async def fake_readiness(api, hostname):
+            return (True, "verified")
+
+        async def fake_create_scrape(api, **kwargs):
+            scrape_calls.append(kwargs)
+            return _scrape_response()
+
+        monkeypatch.setattr(cc, "fetch_profile_readiness", fake_readiness)
+        monkeypatch.setattr(cc, "create_scrape", fake_create_scrape)
+
+        api = MagicMock()
+        api.post = AsyncMock(return_value=_post_response(status_code=200, post_id=99))
+        api.get = AsyncMock(return_value=json.dumps({"success": True, "data": {"data": []}}))
+
+        out = asyncio.run(cc.process_one(api, _msg(), quota=100))
+
+        assert out.outcome == "deduped"
+        assert scrape_calls == []
+        assert out.scrape_created is False
+
+    def test_audit_msg_threads_scrape_fields(self, monkeypatch):
+        """_audit_msg forwards the outcome's scrape decision to
+        record_forward_audit so the forward_audit doc is observable."""
+        recorded = {}
+
+        def fake_record(**kwargs):
+            recorded.update(kwargs)
+
+        monkeypatch.setattr(cc, "record_forward_audit", fake_record)
+        outcome = cc.ProcessOutcome(
+            outcome="created",
+            job_post_id="42",
+            scrape_created=True,
+            scrape_id=555,
+            profile_tier="verified",
+        )
+        cc._audit_msg(_msg(), 2, outcome)
+
+        assert recorded["scrape_created"] is True
+        assert recorded["scrape_id"] == 555
+        assert recorded["profile_tier"] == "verified"
