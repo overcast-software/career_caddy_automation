@@ -713,6 +713,41 @@ async def create_scrape(
     return await api.post("/api/v1/scrapes/", payload)
 
 
+async def fetch_profile_readiness(api: ApiClient, hostname: str) -> tuple[bool, str | None] | None:
+    """Read a domain's scrape-readiness signal from the api.
+
+    Hits the staff-only ScrapeProfile filter endpoint
+    ``GET /api/v1/scrape-profiles/?filter[hostname]=<hostname>`` (api PR
+    #185) and returns ``(is_known_good, tier)`` for the first matched
+    profile, or ``None`` when there's no profile for the host *or* the
+    fetch fails for any reason.
+
+    ``is_known_good`` is read snake_case — the api does not dasherize
+    JSON:API attribute keys. ``tier`` comes from the nested
+    ``readiness.tier`` and may be ``None`` even on a hit.
+
+    Fail-safe by contract: any miss / parse error / non-success envelope
+    returns ``None`` so callers treat "unknown" exactly like "not
+    known-good". cc_auto's API key is staff-scoped, so the filter is
+    accessible (a non-staff key would get 403 → ``None`` here too).
+    """
+    try:
+        raw = await api.get("/api/v1/scrape-profiles/", params={"filter[hostname]": hostname})
+        resp = json.loads(raw)
+    except Exception:
+        return None
+    if not resp.get("success"):
+        return None
+    profiles = (resp.get("data") or {}).get("data") or []
+    if not profiles:
+        return None
+    attrs = profiles[0].get("attributes") or {}
+    is_known_good = bool(attrs.get("is_known_good"))
+    readiness = attrs.get("readiness")
+    tier = readiness.get("tier") if isinstance(readiness, dict) else None
+    return is_known_good, tier
+
+
 async def get_scrapes(
     api: ApiClient,
     id: int | None = None,
