@@ -186,6 +186,27 @@ def _forward_auto_scrape_enabled() -> bool:
     }
 
 
+def _forward_attended_known_good_enabled() -> bool:
+    """Opt-in gate for routing a known-good auto-scrape to the operator's
+    ATTENDED runner.
+
+    Default OFF. Mirrors ``_forward_auto_scrape_enabled``'s truthy-string
+    contract. When ON (and the auto-scrape flag is also on for a known-good
+    host) the created ``hold`` Scrape is marked ``attended=True`` so ONLY an
+    attended runner (``make runner ARGS="--attended"``, warm cookies/login)
+    claims it via the api's partitioned claim-next. The operational
+    consequence — and the reason this defaults OFF — is that an
+    attended-marked scrape sits in ``hold`` indefinitely unless an attended
+    runner is actually running; default runners skip it.
+    """
+    return os.environ.get("CADDY_FORWARD_ATTENDED_KNOWN_GOOD", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 async def _maybe_auto_scrape(
     api: ApiClient,
     *,
@@ -232,8 +253,13 @@ async def _maybe_auto_scrape(
     if not is_known_good:
         return None, tier
 
+    # Known-good host: optionally route the hold to the operator's attended
+    # runner (warm cookies/login) instead of the generic FIFO hold queue.
+    # Gated independently so attended-routing stays OFF until an operator
+    # both opts into auto-scrape AND runs an attended runner.
+    attended = _forward_attended_known_good_enabled()
     try:
-        raw = await create_scrape(api, url=url, job_post_id=jp_id, status="hold")
+        raw = await create_scrape(api, url=url, job_post_id=jp_id, status="hold", attended=attended)
         resp = json.loads(raw)
     except Exception as exc:
         logger.warning("catchall: auto-scrape create raised for post %s: %s", jp_id, exc)

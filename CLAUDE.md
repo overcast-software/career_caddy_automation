@@ -134,6 +134,8 @@ Optional:
 - `CADDY_LOG_DIR` — file-log destination (default `$CADDY_HOME/var/logs/`)
 - `CADDY_EMAIL_BACKEND` — `notmuch` (default) or `imap`
 - `LOGFIRE_READ_TOKEN` — only needed if you want MCP / agents to query logfire reads
+- `CADDY_FORWARD_AUTO_SCRAPE_KNOWN_GOOD` — opt-in (default OFF): the `caddy-catchall` poller creates a `hold` Scrape when a forwarded JobPost lands on a known-good (Tier-0) domain
+- `CADDY_FORWARD_ATTENDED_KNOWN_GOOD` — opt-in (default OFF): marks that auto-scrape `attended=True` so ONLY an attended runner (`make runner ARGS="--attended"`) claims it. With no attended runner running, the scrape sits in `hold` — hence OFF by default
 
 ### Self-hosting against your own Career Caddy domain
 
