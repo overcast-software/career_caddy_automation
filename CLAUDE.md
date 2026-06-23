@@ -136,6 +136,7 @@ Optional:
 - `LOGFIRE_READ_TOKEN` — only needed if you want MCP / agents to query logfire reads
 - `CADDY_FORWARD_AUTO_SCRAPE_KNOWN_GOOD` — opt-in (default OFF): the `caddy-catchall` poller creates a `hold` Scrape when a forwarded JobPost lands on a known-good (Tier-0) domain
 - `CADDY_FORWARD_ATTENDED_KNOWN_GOOD` — opt-in (default OFF): marks that auto-scrape `attended=True` so ONLY an attended runner (`make runner ARGS="--attended"`) claims it. With no attended runner running, the scrape sits in `hold` — hence OFF by default
+- **api-side staleness fallback for the orphaned-`hold` case above** (these are set on the *API* deployment, not in cc_auto's env): the api runs a scheduled sweep (`sweep_orphaned_attended_holds`) that warns when attended holds age past `CC_ATTENDED_HOLD_WARN_MINUTES` (default 30), and — only when `CC_ATTENDED_HOLD_TTL_MINUTES > 0` (default `0` = off) — auto-acts per `CC_ATTENDED_HOLD_TTL_ACTION` (`fail` default | `unattended`). So a forgotten attended runner no longer orphans scrapes silently. See api PACA CC #32.
 
 ### Self-hosting against your own Career Caddy domain
 
