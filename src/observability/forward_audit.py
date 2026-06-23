@@ -41,6 +41,22 @@ per-message scrape decision observable:
   message yielded multiple created posts), else None.
 - ``profile_tier`` — the ScrapeProfile readiness tier that gated the
   scrape, else None.
+
+Operator-side near-dupe pre-check fields (cc_auto's EXTRA net on top of
+the api's canonical POST-time dedupe; see ``api_client.find_duplicate_candidates``):
+
+- ``dup_decision`` — the most-severe per-link decision the pre-check
+  reached for this message, one of :data:`DUP_DECISIONS`:
+  ``"unique"`` (no candidate), ``"possible-near-dupe"`` (medium/low
+  candidate; post still created + flagged), ``"suspected-duplicate"``
+  (high-confidence candidate; post still created + flagged — the
+  fail-open default), ``"skipped-dupe"`` (high-confidence candidate and
+  the operator opted into ``CADDY_FORWARD_DEDUPE_SKIP_HIGH``, so the POST
+  was skipped), or ``"dup-check-error"`` (lookup raised; fails OPEN — the
+  post is created). ``None`` when no link was checked.
+- ``dup_candidate_of`` — the JobPost ids the pre-check matched the
+  incoming links against (the suspected duplicate-of set), for a
+  one-query false-positive audit. Empty/None when nothing matched.
 """
 
 from __future__ import annotations
@@ -63,6 +79,21 @@ FORWARD_OUTCOMES = frozenset(
         "no_urls_extracted",
         "post_failed",
         "parse_failed",
+    }
+)
+
+
+# Operator-side near-dupe pre-check decisions (the ``dup_decision`` column,
+# orthogonal to ``outcome``). A dashboard grouping on ``dup_decision``
+# surfaces the false-positive-audit slice; keep this in sync with the
+# decision logic in ``src.pollers.email_catchall``.
+DUP_DECISIONS = frozenset(
+    {
+        "unique",
+        "possible-near-dupe",
+        "suspected-duplicate",
+        "skipped-dupe",
+        "dup-check-error",
     }
 )
 
@@ -101,6 +132,8 @@ def record_forward_audit(
     scrape_created: bool = False,
     scrape_id: int | None = None,
     profile_tier: str | None = None,
+    dup_decision: str | None = None,
+    dup_candidate_of: list[int] | None = None,
     extras: dict[str, Any] | None = None,
 ) -> None:
     """Insert one ``forward_audit`` doc.
@@ -135,6 +168,8 @@ def record_forward_audit(
             "scrape_created": scrape_created,
             "scrape_id": scrape_id,
             "profile_tier": profile_tier,
+            "dup_decision": dup_decision,
+            "dup_candidate_of": list(dup_candidate_of) if dup_candidate_of else None,
             "recorded_at": _now(),
         }
         if extras:

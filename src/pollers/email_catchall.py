@@ -24,6 +24,16 @@ dedupe/quota-skip) fails safe to JobPost-only — auto-scrape never
 blocks or fails JobPost discovery, and the decision is per-URL and
 independent.
 
+Before each JobPost POST the poller runs an operator-side near-dupe
+pre-check (``_dedupe_precheck`` → ``api_client.find_duplicate_candidates``)
+— an ADDITIONAL net for *non-canonical* near-dupes (the same role
+re-listed from a different source URL) that the api's POST-time
+canonical dedupe (canonical_link + fingerprint) cannot catch. By
+default it only FLAGS the decision in ``forward_audit`` (``dup_decision``
+/ ``dup_candidate_of``) and always still POSTs — fail-open, never drops
+a post. An operator can opt into suppressing the redundant create on a
+high-confidence hit via ``CADDY_FORWARD_DEDUPE_SKIP_HIGH`` (default OFF).
+
 Per-user-per-day quota check + per-message ``forward_audit`` writes
 land in Mongo. The poller fails open on Mongo outage — every call
 into the observability layer is wrapped.
@@ -43,6 +53,9 @@ Configuration (all env-driven; no positional secrets):
 - ``CADDY_CATCHALL_DOMAIN`` — catchall domain (default
   ``careercaddy.online``).
 - ``CADDY_FORWARD_QUOTA_PER_USER_PER_DAY`` — soft quota (default 100).
+- ``CADDY_FORWARD_DEDUPE_SKIP_HIGH`` — opt-in (default OFF): suppress the
+  POST on a high-confidence near-dupe pre-check hit instead of
+  creating + flagging it. OFF keeps the fail-open posture (always POST).
 
 Run forms:
 
@@ -61,7 +74,7 @@ import asyncio
 import json
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from src.agents.span_validator import filter_span_atomic
@@ -72,6 +85,7 @@ from src.client.api_client import (
     create_job_post_with_company_check,
     create_scrape,
     fetch_profile_readiness,
+    find_duplicate_candidates,
     find_user_by_username,
 )
 from src.email_source.imap_source import CatchallImapClient, CatchallMessage
@@ -113,6 +127,13 @@ class ProcessOutcome:
     scrape_created: bool = False
     scrape_id: int | None = None
     profile_tier: str | None = None
+    # Operator-side near-dupe pre-check decision (see _dedupe_precheck).
+    # dup_decision is the most-severe per-link decision across the message;
+    # dup_candidate_of is the flat set of suspected duplicate-of post ids.
+    dup_decision: str | None = None
+    dup_candidate_of: list[int] = field(default_factory=list)
+    dup_skipped: int = 0  # links the pre-check skipped (high-confidence + skip opt-in)
+    dup_flagged: int = 0  # links created-but-flagged (suspected/possible near-dupe)
 
 
 async def resolve_localpart(api: ApiClient, localpart: str) -> int | None:
@@ -205,6 +226,92 @@ def _forward_attended_known_good_enabled() -> bool:
         "yes",
         "on",
     }
+
+
+def _forward_dedupe_skip_high_enabled() -> bool:
+    """Opt-in gate: on a HIGH-confidence near-dupe pre-check hit, SKIP the
+    POST (record ``skipped-dupe``) instead of creating + flagging it.
+
+    Default OFF. Mirrors the truthy-string contract of the other
+    ``CADDY_FORWARD_*`` gates. The fail-open default (OFF) NEVER drops a
+    post: a high-confidence pre-check hit still POSTs (the api owns
+    canonical dedupe) and the audit row records ``suspected-duplicate``
+    for review. Only after an operator has watched the flagged stream and
+    trusts the heuristic do they flip this on to suppress the redundant
+    create — accepting that a false positive then drops a distinct post,
+    and that an exact-link skip forgoes the api's field-merge. It defaults
+    OFF precisely because false-positive skips are the failure mode to
+    avoid.
+    """
+    return os.environ.get("CADDY_FORWARD_DEDUPE_SKIP_HIGH", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+# Per-link near-dupe decisions, ordered most-severe first. The message-level
+# ProcessOutcome.dup_decision is the highest-severity decision across links.
+_DEDUPE_SEVERITY = (
+    "skipped-dupe",
+    "suspected-duplicate",
+    "possible-near-dupe",
+    "dup-check-error",
+    "unique",
+)
+
+
+def _most_severe_decision(decisions: list[str]) -> str | None:
+    """Highest-severity per-link decision for the message-level audit row."""
+    present = set(decisions)
+    for decision in _DEDUPE_SEVERITY:
+        if decision in present:
+            return decision
+    return None
+
+
+def _dedup_ids(ids: list[int]) -> list[int]:
+    """Stable-order de-dup of suspected duplicate-of post ids."""
+    return list(dict.fromkeys(ids))
+
+
+async def _dedupe_precheck(api: ApiClient, link) -> tuple[str, list[int]]:
+    """Operator-side near-dupe pre-check for one extracted link.
+
+    Returns ``(decision, candidate_ids)`` where ``decision`` is one of
+    :data:`src.observability.forward_audit.DUP_DECISIONS`. This is the
+    EXTRA net for *non-canonical* near-dupes (same role, different source
+    URL); it NEVER replaces the api's POST-time canonical dedupe.
+
+    Fully fail-open: any error returns ``("dup-check-error", [])`` and the
+    caller still POSTs. A clean "no candidate" returns ``("unique", [])``.
+    A HIGH-confidence hit returns ``"skipped-dupe"`` ONLY when the opt-in
+    ``CADDY_FORWARD_DEDUPE_SKIP_HIGH`` gate is on (caller then skips the
+    POST); otherwise it is ``"suspected-duplicate"``. A medium/low hit is
+    ``"possible-near-dupe"``. Both flag-only decisions still POST.
+    """
+    try:
+        candidates = await find_duplicate_candidates(
+            api,
+            title=link.title,
+            company=(link.company or None),
+            link=link.url,
+        )
+    except Exception as exc:
+        logger.warning("catchall: dedupe pre-check raised for %s: %s", link.url, exc)
+        return "dup-check-error", []
+
+    if not candidates:
+        return "unique", []
+
+    ids = [c.id for c in candidates]
+    top = candidates[0]  # find_duplicate_candidates sorts confidence-desc
+    if top.confidence == "high":
+        if _forward_dedupe_skip_high_enabled():
+            return "skipped-dupe", ids
+        return "suspected-duplicate", ids
+    return "possible-near-dupe", ids
 
 
 async def _maybe_auto_scrape(
@@ -337,17 +444,51 @@ async def process_one(
             ),
         )
 
-    # POST one JobPost per extracted link. The api owns dedupe; we
-    # tally created vs. deduped from the per-row response codes.
+    # POST one JobPost per extracted link. The api owns CANONICAL dedupe
+    # (canonical_link + fingerprint), and we tally created vs. deduped from
+    # the per-row response codes. BEFORE each POST we run an additional
+    # operator-side near-dupe pre-check (_dedupe_precheck) — the extra net
+    # for non-canonical near-dupes the api can't catch pre-create. It
+    # fails OPEN (errors still POST) and only suppresses a create on a
+    # high-confidence hit when the opt-in skip gate is on.
     created = 0
     deduped = 0
     failed = 0
+    dup_skipped = 0
+    dup_flagged = 0
+    dup_candidate_of: list[int] = []
+    dup_decisions: list[str] = []
     first_post_id: int | str | None = None
     scrape_created = False
     first_scrape_id: int | None = None
     first_scrape_tier: str | None = None
     for link in safe_links:
         desc = link.description or None
+
+        dup_decision, candidate_ids = await _dedupe_precheck(api, link)
+        dup_decisions.append(dup_decision)
+        dup_candidate_of.extend(candidate_ids)
+        if dup_decision == "skipped-dupe":
+            dup_skipped += 1
+            logger.info(
+                "[FWD-SKIP] uid=%s user=%s  %s  dup_of=%s",
+                msg.uid,
+                user_id,
+                link.title[:40],
+                candidate_ids,
+            )
+            continue
+        if dup_decision in ("suspected-duplicate", "possible-near-dupe"):
+            dup_flagged += 1
+            logger.info(
+                "[FWD-DUP?] uid=%s user=%s  %s  (%s, dup_of=%s)",
+                msg.uid,
+                user_id,
+                link.title[:40],
+                dup_decision,
+                candidate_ids,
+            )
+
         try:
             if link.company:
                 raw = await create_job_post_with_company_check(
@@ -409,14 +550,21 @@ async def process_one(
         else:
             failed += 1
 
-    if failed and not (created or deduped):
+    if failed and not (created or deduped or dup_skipped):
         return ProcessOutcome(
             outcome="post_failed",
             quota_remaining=max(0, quota_remaining - created),
             bounce_reason="all JobPost POSTs failed",
             failed=failed,
+            dup_decision=_most_severe_decision(dup_decisions),
+            dup_candidate_of=_dedup_ids(dup_candidate_of),
+            dup_skipped=dup_skipped,
+            dup_flagged=dup_flagged,
         )
 
+    # A message whose only links were skipped as high-confidence dupes is a
+    # client-side dedupe — fold it into the "deduped" bucket (ackable),
+    # distinguished from api-side dedupes by dup_decision="skipped-dupe".
     primary_outcome = "created" if created else "deduped"
     return ProcessOutcome(
         outcome=primary_outcome,
@@ -428,6 +576,10 @@ async def process_one(
         scrape_created=scrape_created,
         scrape_id=first_scrape_id,
         profile_tier=first_scrape_tier,
+        dup_decision=_most_severe_decision(dup_decisions),
+        dup_candidate_of=_dedup_ids(dup_candidate_of),
+        dup_skipped=dup_skipped,
+        dup_flagged=dup_flagged,
     )
 
 
@@ -452,6 +604,8 @@ def _audit_msg(msg: CatchallMessage, user_id: int | None, outcome: ProcessOutcom
         scrape_created=outcome.scrape_created,
         scrape_id=outcome.scrape_id,
         profile_tier=outcome.profile_tier,
+        dup_decision=outcome.dup_decision,
+        dup_candidate_of=outcome.dup_candidate_of,
         extras={
             "uid": msg.uid,
             "mailbox": msg.mailbox,
@@ -461,6 +615,8 @@ def _audit_msg(msg: CatchallMessage, user_id: int | None, outcome: ProcessOutcom
                 "created": outcome.created,
                 "deduped": outcome.deduped,
                 "failed": outcome.failed,
+                "dup_skipped": outcome.dup_skipped,
+                "dup_flagged": outcome.dup_flagged,
             },
         },
     )

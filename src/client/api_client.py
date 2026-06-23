@@ -12,6 +12,7 @@ Usage:
 """
 
 import json
+from dataclasses import dataclass, replace
 from typing import Literal
 from urllib.parse import urljoin
 
@@ -476,6 +477,204 @@ async def search_job_posts(
     if page_size is not None:
         params["page[size]"] = page_size
     return await api.get("/api/v1/job-posts/", params=params)
+
+
+# ---------------------------------------------------------------------------
+# Pre-create near-dupe check (operator-side, REST-only)
+# ---------------------------------------------------------------------------
+
+# Confidence ranking used to pick the strongest candidate (high is most
+# certain). Mirrors the api's by-id /duplicate-candidates/ vocabulary.
+_DUP_CONFIDENCE_RANK = {"high": 3, "medium": 2, "low": 1}
+
+# Title-similarity guards. The api owns the authoritative title_similarity
+# (its content-fingerprint logic, which we can't import across the HTTP
+# boundary); these reproduce its INTENT conservatively: the shorter
+# normalized title must be a prefix/suffix of the longer AND substantial
+# enough that the overlap isn't a one-word collision ("Engineer" sitting
+# inside "Engineering Manager"). Deliberately strict — a missed near-dupe
+# (still created + reviewable) beats a false-positive that could later be
+# auto-skipped.
+_DUP_TITLE_MIN_LEN = 8
+_DUP_TITLE_MIN_RATIO = 0.6
+
+
+@dataclass(frozen=True)
+class DuplicateCandidate:
+    """One suspected-duplicate JobPost surfaced by the pre-create check.
+
+    Shape mirrors the api's by-id ``/duplicate-candidates/`` payload and
+    the public-MCP ``find_duplicate_candidates`` composite so cc_auto and
+    the api stay in lockstep on what "duplicate" means.
+    """
+
+    id: int
+    title: str
+    company_name: str | None
+    confidence: str  # "high" | "medium" | "low"
+    match_signals: list[str]
+    frontend_url: str | None = None
+
+
+def _coerce_int(value: object) -> int | None:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_title(title: str | None) -> str:
+    return " ".join((title or "").lower().split())
+
+
+def _title_relation(incoming: str, existing: str) -> str | None:
+    """Classify two titles → ``"title_exact"`` / ``"title_similarity"`` / None.
+
+    Conservative prefix/suffix heuristic — see the module guards above.
+    """
+    a, b = _normalize_title(incoming), _normalize_title(existing)
+    if not a or not b:
+        return None
+    if a == b:
+        return "title_exact"
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    if len(shorter) < _DUP_TITLE_MIN_LEN:
+        return None
+    if len(shorter) / len(longer) < _DUP_TITLE_MIN_RATIO:
+        return None
+    if longer.startswith(shorter) or longer.endswith(shorter):
+        return "title_similarity"
+    return None
+
+
+async def _resolve_company_id(api: ApiClient, company_name: str) -> int | None:
+    """Resolve a company name → id via ``find_company_by_name``; None on miss."""
+    try:
+        resp = json.loads(await find_company_by_name(api, company_name))
+    except Exception:
+        return None
+    if not resp.get("success"):
+        return None
+    companies = (resp.get("data") or {}).get("companies") or []
+    if not companies:
+        return None
+    return _coerce_int(companies[0].get("id"))
+
+
+async def find_duplicate_candidates(
+    api: ApiClient,
+    *,
+    title: str,
+    company: str | None = None,
+    link: str | None = None,
+    max_results: int = 10,
+) -> list[DuplicateCandidate]:
+    """Pre-create near-dupe check — does an incoming posting already exist?
+
+    The operator-side, REST-only twin of the public-MCP
+    ``find_duplicate_candidates`` composite (which has no api endpoint of
+    its own — it is itself built from ``find_job_post_by_link`` +
+    ``find_company_by_name`` + ``search_job_posts`` + a local title
+    compare). Reproducing that strategy here lets cc_auto's catchall poller
+    run the check over plain HTTP REST without the MCP transport, while
+    staying in lockstep with the api's documented composite.
+
+    Strategy (kept aligned with the MCP composite):
+
+      - ``link`` exact match  → confidence ``"high"``,  signal ``"link"``.
+      - ``company`` resolved  → list its posts, compare titles locally:
+          * normalized-equal title → ``"high"``,   signal ``"title_exact"``.
+          * prefix/suffix overlap  → ``"medium"``, signal ``"title_similarity"``.
+
+    This is the EXTRA net for *non-canonical* near-dupes — the same role
+    re-listed from a different source URL — that the api's POST-time
+    canonical dedupe (``canonical_link`` + ``fingerprint``) does not catch.
+    It never replaces that dedupe: the caller still POSTs, the api still
+    returns created/deduped.
+
+    Fail-safe by contract: any miss / parse error / api exception returns
+    ``[]`` (mirrors ``fetch_profile_readiness`` returning ``None``), so a
+    lookup hiccup degrades to "looks unique" and the caller fails OPEN —
+    it still creates the post. ``title`` alone (no link, no company) is too
+    low-signal and returns ``[]``.
+    """
+    try:
+        candidates: dict[int, DuplicateCandidate] = {}
+
+        # 1) Exact-link match (high). The api POST dedupes this too, but
+        #    surfacing it makes the pre-create decision observable.
+        if link:
+            try:
+                resp = json.loads(await find_job_post_by_link(api, link))
+            except Exception:
+                resp = {}
+            if resp.get("success"):
+                for row in (resp.get("data") or {}).get("data") or []:
+                    cid = _coerce_int(row.get("id"))
+                    if cid is None:
+                        continue
+                    attrs = row.get("attributes") or {}
+                    candidates[cid] = DuplicateCandidate(
+                        id=cid,
+                        title=attrs.get("title") or "",
+                        company_name=attrs.get("company_name"),
+                        confidence="high",
+                        match_signals=["link"],
+                        frontend_url=row.get("_frontend_url"),
+                    )
+
+        # 2) Same-company title comparison (high on exact, medium on drift).
+        if company:
+            company_id = await _resolve_company_id(api, company)
+            if company_id is not None:
+                try:
+                    resp = json.loads(
+                        await search_job_posts(
+                            api, company_id=company_id, page_size=max_results * 5
+                        )
+                    )
+                except Exception:
+                    resp = {}
+                if resp.get("success"):
+                    for row in (resp.get("data") or {}).get("data") or []:
+                        cid = _coerce_int(row.get("id"))
+                        if cid is None:
+                            continue
+                        attrs = row.get("attributes") or {}
+                        relation = _title_relation(title, attrs.get("title") or "")
+                        if relation is None:
+                            continue
+                        confidence = "high" if relation == "title_exact" else "medium"
+                        existing = candidates.get(cid)
+                        if existing is None:
+                            candidates[cid] = DuplicateCandidate(
+                                id=cid,
+                                title=attrs.get("title") or "",
+                                company_name=attrs.get("company_name") or company,
+                                confidence=confidence,
+                                match_signals=[relation],
+                                frontend_url=row.get("_frontend_url"),
+                            )
+                        else:
+                            # Same row matched link + title: union signals,
+                            # keep the strongest confidence.
+                            signals = list(dict.fromkeys([*existing.match_signals, relation]))
+                            best = existing.confidence
+                            if _DUP_CONFIDENCE_RANK.get(confidence, 0) > _DUP_CONFIDENCE_RANK.get(
+                                best, 0
+                            ):
+                                best = confidence
+                            candidates[cid] = replace(
+                                existing, confidence=best, match_signals=signals
+                            )
+
+        return sorted(
+            candidates.values(),
+            key=lambda c: _DUP_CONFIDENCE_RANK.get(c.confidence, 0),
+            reverse=True,
+        )[:max_results]
+    except Exception:
+        return []
 
 
 async def get_job_posts(

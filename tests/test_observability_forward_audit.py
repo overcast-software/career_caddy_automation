@@ -128,6 +128,50 @@ def test_count_forwards_today_zero_on_db_outage(monkeypatch):
     assert forward_audit.count_forwards_today(2) == 0
 
 
+def test_record_forward_audit_stores_dup_fields(monkeypatch):
+    db = _patched_db(monkeypatch)
+    forward_audit.record_forward_audit(
+        email_id="<msg-dup@catchall>",
+        forwarded_to_localpart="dough",
+        forwarded_via_address="dough@careercaddy.online",
+        resolved_user_id=2,
+        outcome="created",
+        dup_decision="suspected-duplicate",
+        dup_candidate_of=[99, 100],
+    )
+    doc = db.forward_audit.inserts[0]
+    assert doc["dup_decision"] == "suspected-duplicate"
+    assert doc["dup_candidate_of"] == [99, 100]
+
+
+def test_record_forward_audit_dup_fields_default_none(monkeypatch):
+    db = _patched_db(monkeypatch)
+    forward_audit.record_forward_audit(
+        email_id="<msg-nodup@catchall>",
+        forwarded_to_localpart="dough",
+        forwarded_via_address="dough@careercaddy.online",
+        resolved_user_id=2,
+        outcome="created",
+    )
+    doc = db.forward_audit.inserts[0]
+    assert doc["dup_decision"] is None
+    # Empty candidate set collapses to None so dashboards don't store [].
+    assert doc["dup_candidate_of"] is None
+
+
+def test_dup_decisions_set_is_frozen():
+    # Same dashboard-stability contract as FORWARD_OUTCOMES: renaming a
+    # decision is a coordinated change with the Metabase questions.
+    assert isinstance(forward_audit.DUP_DECISIONS, frozenset)
+    assert forward_audit.DUP_DECISIONS == {
+        "unique",
+        "possible-near-dupe",
+        "suspected-duplicate",
+        "skipped-dupe",
+        "dup-check-error",
+    }
+
+
 def test_forward_outcomes_set_is_frozen():
     # The dashboard surface depends on this — any rename of a bucket
     # is a coordinated change with the Metabase questions, not a

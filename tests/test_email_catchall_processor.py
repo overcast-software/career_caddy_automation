@@ -26,6 +26,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.client.api_client import DuplicateCandidate
 from src.email_source.imap_source import CatchallMessage
 from src.pollers import email_catchall as cc
 
@@ -529,3 +530,151 @@ class TestForwardAutoScrape:
         assert recorded["scrape_created"] is True
         assert recorded["scrape_id"] == 555
         assert recorded["profile_tier"] == "verified"
+
+
+# ---------------------------------------------------------------------------
+# Operator-side near-dupe pre-check (CADDY_FORWARD_DEDUPE_SKIP_HIGH)
+# ---------------------------------------------------------------------------
+
+
+def _high(post_id: int = 99) -> DuplicateCandidate:
+    return DuplicateCandidate(
+        id=post_id,
+        title="ID.me Authentication Engineer",
+        company_name="ID.me",
+        confidence="high",
+        match_signals=["title_exact"],
+        frontend_url=f"/job-posts/{post_id}",
+    )
+
+
+def _medium(post_id: int = 77) -> DuplicateCandidate:
+    return DuplicateCandidate(
+        id=post_id,
+        title="ID.me Authentication Engineer II",
+        company_name="ID.me",
+        confidence="medium",
+        match_signals=["title_similarity"],
+        frontend_url=f"/job-posts/{post_id}",
+    )
+
+
+class TestDedupePrecheck:
+    def test_unique_when_no_candidates(self, stub_pipeline, created_post_api, monkeypatch):
+        """No candidate → create as usual, dup_decision='unique'."""
+
+        async def fake_dupes(api, **kwargs):
+            return []
+
+        monkeypatch.setattr(cc, "find_duplicate_candidates", fake_dupes)
+        out = asyncio.run(cc.process_one(created_post_api, _msg(), quota=100))
+
+        assert out.outcome == "created"
+        assert out.created == 1
+        assert out.dup_decision == "unique"
+        assert out.dup_candidate_of == []
+        assert out.dup_skipped == 0
+        assert out.dup_flagged == 0
+
+    def test_high_confidence_skip_off_creates_and_flags(
+        self, stub_pipeline, created_post_api, monkeypatch
+    ):
+        """Fail-open default: a high-confidence hit STILL creates the post
+        (never silently dropped) and records dup_decision='suspected-duplicate'."""
+        monkeypatch.delenv("CADDY_FORWARD_DEDUPE_SKIP_HIGH", raising=False)
+
+        async def fake_dupes(api, **kwargs):
+            return [_high(99)]
+
+        monkeypatch.setattr(cc, "find_duplicate_candidates", fake_dupes)
+        out = asyncio.run(cc.process_one(created_post_api, _msg(), quota=100))
+
+        assert out.outcome == "created"
+        assert out.created == 1
+        assert created_post_api.post.await_count == 1  # the POST actually happened
+        assert out.dup_decision == "suspected-duplicate"
+        assert out.dup_candidate_of == [99]
+        assert out.dup_skipped == 0
+        assert out.dup_flagged == 1
+
+    def test_high_confidence_skip_on_suppresses_create(
+        self, stub_pipeline, created_post_api, monkeypatch
+    ):
+        """Opt-in skip ON: a high-confidence hit suppresses the POST and
+        records dup_decision='skipped-dupe' (no create)."""
+        monkeypatch.setenv("CADDY_FORWARD_DEDUPE_SKIP_HIGH", "true")
+
+        async def fake_dupes(api, **kwargs):
+            return [_high(99)]
+
+        monkeypatch.setattr(cc, "find_duplicate_candidates", fake_dupes)
+        out = asyncio.run(cc.process_one(created_post_api, _msg(), quota=100))
+
+        # All links skipped → folded into the deduped bucket (ackable).
+        assert out.outcome == "deduped"
+        assert out.created == 0
+        assert created_post_api.post.await_count == 0  # the POST was suppressed
+        assert out.dup_decision == "skipped-dupe"
+        assert out.dup_candidate_of == [99]
+        assert out.dup_skipped == 1
+
+    def test_medium_confidence_creates_and_flags_even_with_skip_on(
+        self, stub_pipeline, created_post_api, monkeypatch
+    ):
+        """The skip gate only suppresses HIGH-confidence hits. A medium
+        near-dupe is always created + flagged, even when skip is ON."""
+        monkeypatch.setenv("CADDY_FORWARD_DEDUPE_SKIP_HIGH", "true")
+
+        async def fake_dupes(api, **kwargs):
+            return [_medium(77)]
+
+        monkeypatch.setattr(cc, "find_duplicate_candidates", fake_dupes)
+        out = asyncio.run(cc.process_one(created_post_api, _msg(), quota=100))
+
+        assert out.outcome == "created"
+        assert out.created == 1
+        assert created_post_api.post.await_count == 1
+        assert out.dup_decision == "possible-near-dupe"
+        assert out.dup_candidate_of == [77]
+        assert out.dup_skipped == 0
+        assert out.dup_flagged == 1
+
+    def test_precheck_error_fails_open_and_creates(
+        self, stub_pipeline, created_post_api, monkeypatch
+    ):
+        """A lookup that RAISES must not block the create — fail OPEN with
+        dup_decision='dup-check-error'."""
+        monkeypatch.setenv("CADDY_FORWARD_DEDUPE_SKIP_HIGH", "true")
+
+        async def boom(api, **kwargs):
+            raise RuntimeError("dedupe endpoint 500")
+
+        monkeypatch.setattr(cc, "find_duplicate_candidates", boom)
+        out = asyncio.run(cc.process_one(created_post_api, _msg(), quota=100))
+
+        assert out.outcome == "created"
+        assert out.created == 1
+        assert created_post_api.post.await_count == 1
+        assert out.dup_decision == "dup-check-error"
+        assert out.dup_skipped == 0
+
+    def test_audit_msg_threads_dup_fields(self, monkeypatch):
+        """_audit_msg forwards dup_decision + dup_candidate_of to
+        record_forward_audit so the decision is observable."""
+        recorded = {}
+
+        def fake_record(**kwargs):
+            recorded.update(kwargs)
+
+        monkeypatch.setattr(cc, "record_forward_audit", fake_record)
+        outcome = cc.ProcessOutcome(
+            outcome="created",
+            job_post_id="42",
+            dup_decision="suspected-duplicate",
+            dup_candidate_of=[99, 100],
+            dup_flagged=1,
+        )
+        cc._audit_msg(_msg(), 2, outcome)
+
+        assert recorded["dup_decision"] == "suspected-duplicate"
+        assert recorded["dup_candidate_of"] == [99, 100]
