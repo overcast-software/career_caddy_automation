@@ -454,6 +454,60 @@ class TestForwardAutoScrape:
         assert scrape_calls == []
         assert out.scrape_created is False
 
+    def test_attended_flag_on_marks_scrape_attended(
+        self, stub_pipeline, created_post_api, monkeypatch
+    ):
+        """auto-scrape ON + attended ON + known-good host →
+        create_scrape called with attended=True."""
+        monkeypatch.setenv("CADDY_FORWARD_AUTO_SCRAPE_KNOWN_GOOD", "true")
+        monkeypatch.setenv("CADDY_FORWARD_ATTENDED_KNOWN_GOOD", "true")
+
+        scrape_calls = []
+
+        async def fake_readiness(api, hostname):
+            return (True, "verified")
+
+        async def fake_create_scrape(api, **kwargs):
+            scrape_calls.append(kwargs)
+            return _scrape_response(555)
+
+        monkeypatch.setattr(cc, "fetch_profile_readiness", fake_readiness)
+        monkeypatch.setattr(cc, "create_scrape", fake_create_scrape)
+
+        out = asyncio.run(cc.process_one(created_post_api, _msg(), quota=100))
+
+        assert out.outcome == "created"
+        assert len(scrape_calls) == 1
+        assert scrape_calls[0]["attended"] is True
+        assert out.scrape_created is True
+
+    def test_attended_flag_off_marks_scrape_unattended(
+        self, stub_pipeline, created_post_api, monkeypatch
+    ):
+        """auto-scrape ON + attended OFF (today's default) → scrape still
+        created, but attended=False — the generic FIFO hold queue."""
+        monkeypatch.setenv("CADDY_FORWARD_AUTO_SCRAPE_KNOWN_GOOD", "true")
+        monkeypatch.delenv("CADDY_FORWARD_ATTENDED_KNOWN_GOOD", raising=False)
+
+        scrape_calls = []
+
+        async def fake_readiness(api, hostname):
+            return (True, "verified")
+
+        async def fake_create_scrape(api, **kwargs):
+            scrape_calls.append(kwargs)
+            return _scrape_response(555)
+
+        monkeypatch.setattr(cc, "fetch_profile_readiness", fake_readiness)
+        monkeypatch.setattr(cc, "create_scrape", fake_create_scrape)
+
+        out = asyncio.run(cc.process_one(created_post_api, _msg(), quota=100))
+
+        assert out.outcome == "created"
+        assert len(scrape_calls) == 1
+        assert scrape_calls[0]["attended"] is False
+        assert out.scrape_created is True
+
     def test_audit_msg_threads_scrape_fields(self, monkeypatch):
         """_audit_msg forwards the outcome's scrape decision to
         record_forward_audit so the forward_audit doc is observable."""

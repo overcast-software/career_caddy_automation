@@ -695,11 +695,24 @@ async def create_scrape(
     job_post_id: int | None = None,
     company_id: int | None = None,
     status: str | None = None,
+    attended: bool = False,
 ) -> str:
-    """Create a scrape record."""
-    attributes = {"url": url}
+    """Create a scrape record.
+
+    ``attended=True`` marks the scrape so ONLY an attended runner
+    (``make runner ARGS="--attended"``, warm cookies/login) claims it via
+    the api's partitioned claim-next; default runners claim only
+    ``attended=False`` holds. Used to route known-good auto-scrapes to the
+    operator's attended session. The api reads the ``attended`` attribute
+    snake_case (it does not dasherize JSON:API attribute keys). When
+    ``False`` (the default) the attribute is omitted, so existing call
+    sites send a byte-identical payload.
+    """
+    attributes: dict = {"url": url}
     if status:
         attributes["status"] = status
+    if attended:
+        attributes["attended"] = True
     relationships = {}
     if job_post_id is not None:
         relationships["job-post"] = {"data": {"type": "job-post", "id": str(job_post_id)}}
