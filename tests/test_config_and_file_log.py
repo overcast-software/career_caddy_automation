@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib
 import logging
 import os
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 
@@ -88,6 +89,7 @@ def test_file_handler_attached_once(monkeypatch, tmp_path):
     # so a test running in a parallel context (pytest cache, prior
     # CADDY_HOME) reports the actual destination instead of guessing.
     fh = handlers_after_first[0]
+    assert isinstance(fh, RotatingFileHandler)
     log_file = Path(fh.baseFilename)
     assert log_file.parent == tmp_path / "var" / "logs"
     logger = logging.getLogger("test-service-logger")
@@ -122,10 +124,74 @@ def test_file_handler_opt_out(monkeypatch, tmp_path):
     assert handlers == []
 
 
+def _strip_bridge_handlers():
+    root = logging.getLogger()
+    root.handlers = [h for h in root.handlers if not getattr(h, "_caddy_logfire_bridge", False)]
+
+
+def test_logfire_bridge_attaches_at_warning():
+    """The WARNING+ stdlib-logging -> logfire bridge attaches exactly one
+    root handler, set at WARNING — so per-email logger.exception errors and
+    the triage loop's loud-on-exit lines become logfire-queryable while
+    INFO stays file-only."""
+    from lib import observability
+
+    importlib.reload(observability)
+    _strip_bridge_handlers()
+
+    observability._attach_logfire_logging_bridge()
+
+    root = logging.getLogger()
+    bridges = [h for h in root.handlers if getattr(h, "_caddy_logfire_bridge", False)]
+    assert len(bridges) == 1
+    assert bridges[0].level == logging.WARNING
+
+
+def test_logfire_bridge_is_idempotent():
+    """Re-invoking the attach must not stack duplicate bridge handlers."""
+    from lib import observability
+
+    _strip_bridge_handlers()
+    observability._attach_logfire_logging_bridge()
+    observability._attach_logfire_logging_bridge()
+    observability._attach_logfire_logging_bridge()
+
+    root = logging.getLogger()
+    bridges = [h for h in root.handlers if getattr(h, "_caddy_logfire_bridge", False)]
+    assert len(bridges) == 1
+
+
+def test_logfire_bridge_is_best_effort(monkeypatch):
+    """A logfire fault while attaching the bridge must be swallowed — a
+    logfire problem can never break logging config or the CLI."""
+    import logfire
+
+    from lib import observability
+
+    _strip_bridge_handlers()
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("logfire exploded")
+
+    monkeypatch.setattr(logfire, "LogfireLoggingHandler", _boom)
+
+    # Must not raise.
+    observability._attach_logfire_logging_bridge()
+
+    root = logging.getLogger()
+    bridges = [h for h in root.handlers if getattr(h, "_caddy_logfire_bridge", False)]
+    assert bridges == []
+
+
 def _cleanup_handlers():
     """Helper for any test that wants to leave the root logger clean."""
     root = logging.getLogger()
-    root.handlers = [h for h in root.handlers if not getattr(h, "_caddy_file_handler", False)]
+    root.handlers = [
+        h
+        for h in root.handlers
+        if not getattr(h, "_caddy_file_handler", False)
+        and not getattr(h, "_caddy_logfire_bridge", False)
+    ]
 
 
 # Always tidy after the file-handler tests so the rest of the suite isn't

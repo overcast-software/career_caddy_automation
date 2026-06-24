@@ -55,6 +55,20 @@ class ImapSource:
             "Set CADDY_EMAIL_BACKEND=notmuch for the inbox-triage daemon."
         )
 
+    async def count_by_query(self, query: str, days_back: int = 14) -> int:
+        raise NotImplementedError(
+            "IMAP backend has no notmuch-style tag query support yet; "
+            "--status only works with CADDY_EMAIL_BACKEND=notmuch."
+        )
+
+    async def list_by_query(
+        self, query: str, limit: int = 20, days_back: int = 14
+    ) -> list[EmailMeta]:
+        raise NotImplementedError(
+            "IMAP backend has no notmuch-style tag query support yet; "
+            "--show only works with CADDY_EMAIL_BACKEND=notmuch."
+        )
+
 
 # ---------------------------------------------------------------------------
 # Catchall poller — B3 (per notes.org/Roadmap/Phase B).

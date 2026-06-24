@@ -25,11 +25,17 @@ from lib.observability import configure_logfire
 
 configure_logfire("caddy-inbox")
 
+try:
+    import logfire
+except ImportError:  # logfire is optional — heartbeat/flush degrade to no-ops
+    logfire = None  # type: ignore[assignment]
+
 import argparse
 import asyncio
 import json
 import logging
 import os
+import signal
 import subprocess
 from dataclasses import dataclass, field
 
@@ -639,6 +645,125 @@ async def print_status(
     logger.info("(use --show <state> to list matching emails)")
 
 
+class _SignalExit(Exception):
+    """Raised to unwind the poll loop on SIGTERM/SIGINT so the stop is
+    logged + flushed (ERROR), never silent.
+
+    AUTO #17: the triage daemon went silent for ~24h looking exactly like
+    an un-trapped signal / host-sleep — a clean stop with no error and no
+    heartbeat. Converting the signal into an exception lets us record and
+    flush before the process dies.
+    """
+
+    def __init__(self, signum: int) -> None:
+        self.signum = signum
+        super().__init__(f"signal {signum}")
+
+
+_STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT)
+
+
+def _heartbeat(backend: str | None) -> None:
+    """Emit a logfire-visible heartbeat each loop cycle.
+
+    Without this, a daemon that is up but seeing zero pending mail emits
+    no logfire records per cycle — indistinguishable from a dead one. The
+    heartbeat makes "alive but idle" visible so a silence points upstream
+    (mail sync / notmuch) rather than at cc_auto. Best-effort: a logfire
+    outage must never break the loop.
+    """
+    try:
+        if logfire is not None:
+            logfire.info(
+                "caddy-inbox heartbeat",
+                backend=backend or os.environ.get("CADDY_EMAIL_BACKEND", "notmuch"),
+            )
+    except Exception:
+        logger.debug("heartbeat logfire.info failed (non-fatal)", exc_info=True)
+
+
+def _force_flush() -> None:
+    """Flush buffered logfire records before exit so a stop/crash isn't
+    lost in the export buffer. Best-effort."""
+    try:
+        if logfire is not None:
+            logfire.force_flush()
+    except Exception:
+        logger.debug("logfire.force_flush failed (non-fatal)", exc_info=True)
+
+
+def _handle_stop_signal(signum: int, _frame: object = None) -> None:
+    """Signal handler: log ERROR + flush logfire, then raise ``_SignalExit``
+    to unwind the loop.
+
+    The loud+flush work lives here (not only in ``_run_loop``) so a real
+    signal is recorded even if the raised exception unwinds outside the
+    loop's frame under asyncio.
+    """
+    try:
+        name = signal.Signals(signum).name
+    except Exception:
+        name = str(signum)
+    logger.error("caddy-inbox received %s — flushing logfire and shutting down.", name)
+    _force_flush()
+    raise _SignalExit(signum)
+
+
+def _install_signal_handlers() -> None:
+    """Trap SIGTERM/SIGINT so a daemon stop is loud + flushed, not silent.
+
+    Best-effort: ``signal.signal`` raises if not on the main thread (e.g.
+    under pytest, or when embedded), so we swallow that — the loop still
+    runs, it just won't intercept signals in that context.
+    """
+    for sig in _STOP_SIGNALS:
+        try:
+            signal.signal(sig, _handle_stop_signal)
+        except (ValueError, OSError):
+            pass
+
+
+async def _run_loop(limit: int, backend: str | None, days_back: int, interval: int) -> None:
+    """Continuous triage poll loop with heartbeat + loud-on-exit.
+
+    Closes the AUTO #17 observability gap:
+
+    * ``_heartbeat`` emits a logfire record every cycle (alive-vs-idle).
+    * an unexpected unwind logs CRITICAL, a signal-driven stop logs ERROR
+      (in ``_handle_stop_signal``), and both ``force_flush`` logfire in
+      ``finally`` — a stop can no longer be silent.
+
+    Per-cycle ``run_once`` failures stay swallowed-and-continued (one bad
+    pass must not kill the daemon, matching run_once's per-email isolation);
+    only an escape from the loop itself is loud.
+    """
+    _install_signal_handlers()
+    logger.info("Loop mode: every %d min.", interval)
+    try:
+        while True:
+            _heartbeat(backend)
+            try:
+                await run_once(limit, backend, days_back)
+            except Exception:
+                logger.exception("run_once crashed — continuing.")
+            await asyncio.sleep(interval * 60)
+    except _SignalExit:
+        # _handle_stop_signal already logged ERROR + flushed; just unwind.
+        raise
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        logger.error("caddy-inbox loop interrupted — shutting down.")
+        raise
+    except BaseException:
+        logger.critical(
+            "caddy-inbox loop exited unexpectedly — the poll loop should run "
+            "forever; treat this as a crash, not a clean stop.",
+            exc_info=True,
+        )
+        raise
+    finally:
+        _force_flush()
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run the three-stage email triage pipeline (caddy-inbox)."
@@ -706,19 +831,18 @@ async def main() -> None:
         return
 
     if args.loop:
-        logger.info("Loop mode: every %d min.", args.interval)
-        while True:
-            try:
-                await run_once(args.limit, args.backend, args.days_back)
-            except Exception:
-                logger.exception("run_once crashed — continuing.")
-            await asyncio.sleep(args.interval * 60)
+        await _run_loop(args.limit, args.backend, args.days_back, args.interval)
     else:
         await run_once(args.limit, args.backend, args.days_back)
 
 
 def run() -> None:
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("caddy-inbox interrupted — exiting.")
+    except _SignalExit as exc:
+        logger.info("caddy-inbox stopped on signal %s — exiting.", exc.signum)
 
 
 if __name__ == "__main__":
