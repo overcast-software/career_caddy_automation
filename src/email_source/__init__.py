@@ -48,6 +48,22 @@ class EmailSource(Protocol):
         """Idempotent tag add. Safe to call with tags already present."""
         ...
 
+    async def count_by_query(self, query: str, days_back: int = 14) -> int:
+        """Thread count for an arbitrary backend query within the date
+        window (powers ``caddy-inbox --status``). Backends that can't
+        answer ad-hoc queries raise ``NotImplementedError``; callers
+        ``hasattr``-guard before use."""
+        ...
+
+    async def list_by_query(
+        self, query: str, limit: int = 20, days_back: int = 14
+    ) -> list[EmailMeta]:
+        """List EmailMetas matching an arbitrary backend query within the
+        date window (powers ``caddy-inbox --show <state>``). Backends that
+        can't answer ad-hoc queries raise ``NotImplementedError``; callers
+        ``hasattr``-guard before use."""
+        ...
+
 
 def make_source(backend: str | None = None) -> EmailSource:
     """Resolve the active email backend.

@@ -87,6 +87,39 @@ def _attach_file_handler(service_name: str) -> None:
         pass
 
 
+def _attach_logfire_logging_bridge() -> None:
+    """Forward stdlib ``logging`` records at WARNING+ into logfire.
+
+    ``configure_logfire`` instruments pydantic-ai + httpx (spans), but
+    nothing bridged plain ``logging`` calls — so per-email
+    ``logger.exception`` errors and the triage loop's loud-on-exit lines
+    only ever reached the rotating file log + TTY, never logfire. This
+    handler closes that gap fleet-wide: every cc_auto entry point that
+    calls ``configure_logfire`` gets WARNING+ records mirrored into
+    logfire and queryable across services, not just caddy-inbox.
+
+    INFO and below stay file-only on purpose (logfire ingest cost) — the
+    triage loop emits its idle heartbeat via ``logfire.info`` directly
+    when it wants an alive-vs-dead signal.
+
+    Idempotent (``_caddy_logfire_bridge`` marker) and best-effort: a
+    logfire import/handler failure must never break configuration.
+    """
+    root = logging.getLogger()
+    if any(getattr(h, "_caddy_logfire_bridge", False) for h in root.handlers):
+        return
+    try:
+        import logfire
+
+        handler = logfire.LogfireLoggingHandler()
+        handler.setLevel(logging.WARNING)
+        handler._caddy_logfire_bridge = True  # type: ignore[attr-defined]
+        root.addHandler(handler)
+    except Exception:
+        # Best-effort — never let a logfire problem break logging config.
+        pass
+
+
 def configure_logfire(service_name: str, **extra: Any) -> None:
     """Idempotent logfire + file-log setup. Safe to call from anywhere; no-ops after first call."""
     global _configured
@@ -114,6 +147,11 @@ def configure_logfire(service_name: str, **extra: Any) -> None:
         send_to_logfire="if-token-present",
         **extra,
     )
+
+    # Bridge stdlib logging WARNING+ into logfire. Independent of the token:
+    # logfire.configure with send_to_logfire="if-token-present" makes the
+    # handler a no-op when unconfigured, so this is always safe to attach.
+    _attach_logfire_logging_bridge()
 
     if os.environ.get("LOGFIRE_TOKEN"):
         try:
