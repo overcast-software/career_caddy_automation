@@ -15,6 +15,32 @@ import os
 from dataclasses import dataclass, field
 from typing import Protocol
 
+_DEFAULT_INBOX_NOTMUCH_FOLDER = "forwarding@careercaddy.online"
+
+
+def notmuch_folder_scope() -> str | None:
+    """Resolve the notmuch maildir folder the inbox pipeline is scoped to.
+
+    Reads ``CADDY_INBOX_NOTMUCH_FOLDER`` with three-way precedence:
+
+    * **unset** → the default multi-user catchall folder
+      (``forwarding@careercaddy.online``). The server-side catchall
+      (``*@careercaddy.online``) collects every user's forwarded job mail
+      into this one folder; scoping to it by default keeps the triage
+      pipeline off unrelated mail in the index.
+    * **set & non-empty** → that folder verbatim (operator override).
+    * **set & empty** (incl. whitespace-only) → ``None``: legacy
+      whole-index behaviour. This is the OSS / un-pre-filtered escape
+      hatch — operators who route job mail into their own folder, or who
+      run a dedicated job-only notmuch DB, opt out of the catchall scope
+      and the source queries the entire index as it did before AUTO-20.
+    """
+    raw = os.environ.get("CADDY_INBOX_NOTMUCH_FOLDER")
+    if raw is None:
+        return _DEFAULT_INBOX_NOTMUCH_FOLDER
+    raw = raw.strip()
+    return raw or None
+
 
 @dataclass
 class EmailMeta:
@@ -24,6 +50,9 @@ class EmailMeta:
     subject: str
     tags: set[str] = field(default_factory=set)
     thread_id: str = ""
+    # Envelope recipient (the catchall RCPT, e.g. ``<user>@careercaddy.online``).
+    # Lazily populated — see ``EmailSource.get_recipient``; ``None`` until then.
+    recipient: str | None = None
 
 
 class EmailSource(Protocol):
@@ -46,6 +75,17 @@ class EmailSource(Protocol):
 
     async def add_tags(self, thread_id: str, tags: list[str]) -> None:
         """Idempotent tag add. Safe to call with tags already present."""
+        ...
+
+    async def get_recipient(self, email_id: str) -> str | None:
+        """Return the envelope recipient address for a single message.
+
+        For the multi-user catchall this is the ``<username>@careercaddy.online``
+        address the message was *delivered* to — the authoritative RCPT used
+        downstream (AUTO-24) to attribute each forwarded JobPost to the right
+        user. Prefers the envelope recipient over the original ``To:``; returns
+        the raw address (no username resolution) or ``None`` when none is found.
+        """
         ...
 
 
