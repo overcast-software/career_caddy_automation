@@ -42,7 +42,6 @@ caddy-url      = "src.pipelines.url_to_caddy:run"
 caddy-email    = "src.pipelines.email_to_caddy:run"
 caddy-classify = "scripts.tag_emails:run"
 caddy-inbox    = "scripts.inbox_triage:run"
-caddy-catchall = "src.pollers.email_catchall:run"
 caddy-web          = "src.pipelines.web_ui:main"
 caddy-orchestrator = "src.agents.a2a_orchestrator:run"
 caddy-gateway      = "mcp_servers.agents_gateway:main"
@@ -95,7 +94,6 @@ ignore = [
 "scripts/*" = ["E402"]
 "mcp_servers/*" = ["E402"]
 "src/pipelines/*" = ["E402"]
-"src/pollers/*" = ["E402"]
 "src/agents/a2a_orchestrator.py" = ["E402"]
 
 [tool.ruff.format]

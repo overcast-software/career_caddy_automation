@@ -220,10 +220,8 @@ async def find_user_by_username(api: ApiClient, username: str) -> str:
         users = (resp.get("data") or {}).get("data") or []
         user_id = int(users[0]["id"]) if users else None
 
-    Username has the same syntactic validation as the catchall validator
-    (api `audit_usernames` mgmt cmd); cc_auto trusts the api's filter to
-    return an empty list rather than raising on a syntactically valid
-    but non-existent username.
+    cc_auto trusts the api's filter to return an empty list rather than
+    raising on a syntactically valid but non-existent username.
     """
     return await api.get("/api/v1/users/", params={"filter[username]": username})
 
@@ -256,13 +254,7 @@ async def get_companies(api: ApiClient, id: int | None = None) -> str:
 # fully fleshed-out. The api gates inbound complete=False on the same
 # trust threshold, so this is a synced contract — keep the two lists in
 # step with api/job_hunting/models/job_post_dedupe.py SOURCE_TRUST.
-#
-# `email-forward` was added in api PR #149 (2026-06): catchall-forward
-# JobPosts carrying provenance via `forwarded_via_address` +
-# `discover_for_user_id`. Same trust posture as the other email-tier
-# sources: title/description from a forwarded JD is best-effort, not a
-# scraped canonical posting.
-_EMAIL_TIER_SOURCES = frozenset({"email", "email_direct", "email-forward"})
+_EMAIL_TIER_SOURCES = frozenset({"email", "email_direct"})
 
 
 async def create_job_post_minimal(
@@ -271,8 +263,6 @@ async def create_job_post_minimal(
     link: str | None = None,
     description: str | None = None,
     source: str = "email",
-    forwarded_via_address: str | None = None,
-    discover_for_user_id: int | None = None,
 ) -> str:
     """Create a job post with no company relationship.
 
@@ -285,26 +275,10 @@ async def create_job_post_minimal(
     row the API auto-creates for the caller, so the post can be filtered
     by provenance later. Defaults to "email" because this helper is the
     email-ingest path.
-
-    For the catchall email-forward pipeline (B3), the api accepts two
-    extra attributes (api PRs #149, #150):
-
-    - `forwarded_via_address`: the `<localpart>@careercaddy.online`
-      address the user forwarded TO. Persists on JobPostDiscovery so
-      the UI can show which address surfaced this post.
-    - `discover_for_user_id`: the user the discovery row should attach
-      to. Required only on staff-authenticated calls that need to
-      attribute the post to a *different* user than the caller (the
-      catchall poller runs under one staff key but creates posts for
-      many users). Omit on normal user-key calls.
     """
     attrs: dict = {"title": title, "link": link, "source": source}
     if description:
         attrs["description"] = description
-    if forwarded_via_address is not None:
-        attrs["forwarded_via_address"] = forwarded_via_address
-    if discover_for_user_id is not None:
-        attrs["discover_for_user_id"] = discover_for_user_id
     if source in _EMAIL_TIER_SOURCES:
         attrs["complete"] = False
     payload = {"data": {"type": "job-post", "attributes": attrs}}
@@ -335,19 +309,12 @@ async def create_job_post_with_company_check(
     company_size: str | None = None,
     company_location: str | None = None,
     source: str = "chat",
-    forwarded_via_address: str | None = None,
-    discover_for_user_id: int | None = None,
 ) -> str:
     """Create a job post, creating the company first if it doesn't exist.
 
     `source` defaults to "email" because cc_auto's primary caller is the
     email-ingest pipeline; rides through to JobPost.source and the
     JobPostDiscovery row the API auto-creates for the caller.
-
-    `forwarded_via_address` and `discover_for_user_id` are the catchall
-    email-forward provenance attributes (api PRs #149/#150). See
-    ``create_job_post_minimal`` for the semantics — they're identical
-    here.
     """
     job_url = url or link
     if not company_name:
@@ -427,10 +394,6 @@ async def create_job_post_with_company_check(
         # Tag provenance so the backend sankey can attribute this post
         # to the code path that created it (chat agent, email pipeline, ...).
         attributes["source"] = source
-        if forwarded_via_address is not None:
-            attributes["forwarded_via_address"] = forwarded_via_address
-        if discover_for_user_id is not None:
-            attributes["discover_for_user_id"] = discover_for_user_id
         if source in _EMAIL_TIER_SOURCES:
             attributes["complete"] = False
         payload = {
