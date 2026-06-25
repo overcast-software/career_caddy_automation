@@ -134,9 +134,6 @@ Optional:
 - `CADDY_LOG_DIR` — file-log destination (default `$CADDY_HOME/var/logs/`)
 - `CADDY_EMAIL_BACKEND` — `notmuch` (default) or `imap`
 - `LOGFIRE_READ_TOKEN` — only needed if you want MCP / agents to query logfire reads
-- `CADDY_FORWARD_AUTO_SCRAPE_KNOWN_GOOD` — opt-in (default OFF): the `caddy-catchall` poller creates a `hold` Scrape when a forwarded JobPost lands on a known-good (Tier-0) domain
-- `CADDY_FORWARD_ATTENDED_KNOWN_GOOD` — opt-in (default OFF): marks that auto-scrape `attended=True` so ONLY an attended runner (`make runner ARGS="--attended"`) claims it. With no attended runner running, the scrape sits in `hold` — hence OFF by default
-- **api-side staleness fallback for the orphaned-`hold` case above** (these are set on the *API* deployment, not in cc_auto's env): the api runs a scheduled sweep (`sweep_orphaned_attended_holds`) that warns when attended holds age past `CC_ATTENDED_HOLD_WARN_MINUTES` (default 30), and — only when `CC_ATTENDED_HOLD_TTL_MINUTES > 0` (default `0` = off) — auto-acts per `CC_ATTENDED_HOLD_TTL_ACTION` (`fail` default | `unattended`). So a forgotten attended runner no longer orphans scrapes silently. See api PACA CC #32.
 
 ### Self-hosting against your own Career Caddy domain
 
@@ -175,7 +172,6 @@ Collections under db `cc_auto`:
 - `triage_emails` — one doc per email processed (refined `outcome` +
   `exception_class` + `network_failure` flags)
 - `traversal_runs` — link-traversal audit (Phase C of the Roadmap)
-- `forward_audit` — catchall-mail audit (Phase B3 of the Roadmap)
 - `skipped_duplicates` — dedupe-skip log
 
 Client lib: **pymongo** (sync). Observability writes are
@@ -224,7 +220,7 @@ Shared helpers for `mcp_servers/browser_server.py` and `src/agents/html_fetchers
 
 ### Observability — `src/observability/` + `lib/observability.py`
 
-- `src/observability/` (NEW per the Roadmap) — Mongo-backed persistence layer. `mongo_client.py` (single cached `pymongo.Database`), `triage_store.py` (run + email collections), `traversal_store.py`, `forward_audit.py`. Domain-API style — call sites in `scripts/inbox_triage.py` etc. import from `src.observability`, not from raw pymongo.
+- `src/observability/` (NEW per the Roadmap) — Mongo-backed persistence layer. `mongo_client.py` (single cached `pymongo.Database`), `triage_store.py` (run + email collections), `traversal_store.py`. Domain-API style — call sites in `scripts/inbox_triage.py` etc. import from `src.observability`, not from raw pymongo.
 - `lib/observability.py` — stateless logfire / file-log configuration (`configure_logfire(name)` adds a rotating file handler under `$CADDY_LOG_DIR`).
 - `lib/trace_*.py` — forensic per-email tracers (`trace_inbox.py`, `trace_dedupe.py`, `trace_observability.py`) gated by env flags. Decorators only; no state.
 
