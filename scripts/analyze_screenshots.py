@@ -129,7 +129,7 @@ def _extract_scrape_list(payload: Any) -> list[dict]:
     return body if isinstance(body, list) else []
 
 
-async def _fetch_scrape_by_id(client: Client, scrape_id: int) -> dict | None:
+async def _fetch_scrape_by_id(client: Client, scrape_id: str) -> dict | None:
     result = await client.call_tool("get_scrapes", {"id": scrape_id})
     payload = _unwrap(result)
     if isinstance(payload, str):
@@ -171,11 +171,11 @@ async def _fetch_scrapes_for_domain(
             if d in _host_of(url) or d in url.lower():
                 seen_ids.add(sid)
                 matched.append(s)
-    matched.sort(key=lambda s: int(s.get("id") or 0), reverse=True)
+    matched.sort(key=lambda s: str(s.get("id") or ""), reverse=True)
     return matched[:limit]
 
 
-async def _list_screenshots(client: Client, scrape_id: int) -> list[str]:
+async def _list_screenshots(client: Client, scrape_id: str) -> list[str]:
     result = await client.call_tool("list_scrape_screenshots", {"scrape_id": scrape_id})
     payload = _unwrap(result)
     if isinstance(payload, str):
@@ -201,7 +201,7 @@ async def _list_screenshots(client: Client, scrape_id: int) -> list[str]:
     return filenames
 
 
-async def _fetch_screenshot_bytes(client: Client, scrape_id: int, filename: str) -> bytes:
+async def _fetch_screenshot_bytes(client: Client, scrape_id: str, filename: str) -> bytes:
     result = await client.call_tool(
         "fetch_scrape_screenshot",
         {"scrape_id": scrape_id, "filename": filename},
@@ -225,12 +225,12 @@ async def _get_profile(client: Client, hostname: str) -> dict | None:
         return None
     p = profiles[0] if isinstance(profiles, list) else profiles
     return {
-        "id": int(p["id"]),
+        "id": str(p["id"]),
         "css_selectors": (p.get("attributes") or {}).get("css-selectors") or {},
     }
 
 
-async def _update_profile(client: Client, profile_id: int, css_selectors: dict) -> None:
+async def _update_profile(client: Client, profile_id: str, css_selectors: dict) -> None:
     await client.call_tool(
         "update_scrape_profile",
         {"profile_id": profile_id, "css_selectors": css_selectors},
@@ -417,7 +417,7 @@ async def main_async() -> int:
 
         rows: list[AnalysisRow] = []
         for s in scrapes:
-            scrape_id = int(s["id"])
+            scrape_id = str(s["id"])
             attrs = s.get("attributes") or {}
             url = attrs.get("url", "")
             note = attrs.get("note")

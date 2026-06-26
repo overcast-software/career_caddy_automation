@@ -103,7 +103,7 @@ def _api_client() -> ApiClient:
     )
 
 
-async def _current_app_status(api: ApiClient, application_id: int) -> str | None:
+async def _current_app_status(api: ApiClient, application_id: str) -> str | None:
     """Fetch the current status of a job_application so we can skip no-op
     PATCHes. Returns None if the fetch fails — callers treat None as 'unknown'
     and proceed with the update."""

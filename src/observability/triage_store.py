@@ -164,7 +164,7 @@ def record_skipped_duplicate(
     incoming_title: str | None,
     incoming_company: str | None,
     incoming_link: str | None,
-    matched_post_id: int | None,
+    matched_post_id: str | None,
     confidence: float | None,
     reason: str | None,
     source: str | None,
