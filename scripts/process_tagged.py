@@ -117,23 +117,17 @@ def _auto_scrape_enabled() -> bool:
     return os.environ.get("CADDY_AUTO_SCRAPE", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _post_id_from_response(resp: dict) -> int | None:
+def _post_id_from_response(resp: dict) -> str | None:
     data = resp.get("data") or {}
     if isinstance(data, dict) and data.get("duplicate") and data.get("existing_id"):
-        try:
-            return int(data["existing_id"])
-        except (TypeError, ValueError):
-            return None
+        return str(data["existing_id"])
     inner = data.get("data") if isinstance(data, dict) else None
     if isinstance(inner, dict) and inner.get("id") is not None:
-        try:
-            return int(inner["id"])
-        except (TypeError, ValueError):
-            return None
+        return str(inner["id"])
     return None
 
 
-async def _ensure_hold_scrape(api: ApiClient, job_post_id: int, url: str) -> str | None:
+async def _ensure_hold_scrape(api: ApiClient, job_post_id: str, url: str) -> str | None:
     """Create a hold-status scrape for this job-post if none exists. Returns status tag."""
     try:
         existing_raw = await get_scrapes(api, job_post_id=job_post_id, per_page=1)
@@ -163,12 +157,15 @@ async def process_single_email(email_id: str, api: ApiClient) -> dict:
         extracted = await extract_job_urls(text)
         before_span = len(extracted.job_urls)
         extracted.job_urls = filter_span_atomic(
-            extracted.job_urls, text, email_id=email_id,
+            extracted.job_urls,
+            text,
+            email_id=email_id,
         )
         if len(extracted.job_urls) != before_span:
             logger.info(
                 "  span_validator dropped %d/%d url(s) (cross-row hallucination guard)",
-                before_span - len(extracted.job_urls), before_span,
+                before_span - len(extracted.job_urls),
+                before_span,
             )
         logger.info("  extractor kept %d url(s): %s", len(extracted.job_urls), extracted.reasoning)
 

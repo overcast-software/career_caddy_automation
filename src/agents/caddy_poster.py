@@ -26,8 +26,8 @@ class CareerCaddyResponse(BaseModel):
     action_taken: str = Field(
         description="Action performed: 'created', 'duplicate', 'found', 'queried', 'error'"
     )
-    job_id: int | None = Field(None, description="ID of the job post (if applicable)")
-    company_id: int | None = Field(None, description="ID of the company (if applicable)")
+    job_id: str | None = Field(None, description="ID of the job post (if applicable)")
+    company_id: str | None = Field(None, description="ID of the company (if applicable)")
     details: dict | None = Field(None, description="Additional data from the API")
 
 
@@ -69,8 +69,8 @@ _CAREER_CADDY_SYSTEM_PROMPT = """
     You MUST call the `final_result` tool with these fields:
     - summary: plain-English description of what happened
     - action_taken: one of "created", "duplicate", "found", "queried", "error"
-    - job_id: integer ID of the job post, or null
-    - company_id: integer ID of the company, or null
+    - job_id: ID of the job post, or null
+    - company_id: ID of the company, or null
     - details: object with extra API data, or null
 
     NEVER output plain text or JSON as your final message. ALWAYS end by calling `final_result`.
@@ -80,7 +80,7 @@ register_defaults()
 
 
 async def parse_and_add_job(
-    job_content: str, url: str | None = None, scrape_id: int | None = None
+    job_content: str, url: str | None = None, scrape_id: str | None = None
 ) -> dict:
     """Extract structured job data from raw content then add it to the system."""
     from src.agents.job_extractor import extract_job_from_content

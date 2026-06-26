@@ -46,19 +46,16 @@ def _api_client() -> ApiClient:
     return ApiClient(base_url, token)
 
 
-def _job_post_id_from_scrape(row: dict) -> int | None:
+def _job_post_id_from_scrape(row: dict) -> str | None:
     rels = row.get("relationships") or {}
     jp = (rels.get("job-post") or rels.get("job_post") or {}).get("data") or {}
     raw = jp.get("id")
     if raw is None:
         return None
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return None
+    return str(raw)
 
 
-async def _already_scored(api: ApiClient, job_post_id: int) -> bool:
+async def _already_scored(api: ApiClient, job_post_id: str) -> bool:
     try:
         raw = await get_scores(api, job_post_id=job_post_id, per_page=1)
         resp = json.loads(raw)
@@ -71,7 +68,7 @@ async def _already_scored(api: ApiClient, job_post_id: int) -> bool:
     return bool(rows)
 
 
-async def _collect_candidates(api: ApiClient, limit: int) -> list[int]:
+async def _collect_candidates(api: ApiClient, limit: int) -> list[str]:
     """Return job_post ids whose scrape completed but have no score yet."""
     try:
         raw = await get_scrapes(
@@ -90,8 +87,8 @@ async def _collect_candidates(api: ApiClient, limit: int) -> list[int]:
         return []
 
     rows = (resp.get("data") or {}).get("data") or []
-    out: list[int] = []
-    seen: set[int] = set()
+    out: list[str] = []
+    seen: set[str] = set()
     for row in rows:
         post_id = _job_post_id_from_scrape(row)
         if post_id is None or post_id in seen:
@@ -105,7 +102,7 @@ async def _collect_candidates(api: ApiClient, limit: int) -> list[int]:
     return out
 
 
-async def score_one(api: ApiClient, job_post_id: int) -> bool:
+async def score_one(api: ApiClient, job_post_id: str) -> bool:
     with logfire.span("score_posts.score_one", job_post_id=job_post_id):
         try:
             raw = await score_job_post(api, job_post_id)

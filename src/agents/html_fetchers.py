@@ -54,7 +54,7 @@ class StoredHtmlFetcher:
 
     _warned_missing_tool: bool = False
 
-    def __init__(self, client: Any, scrape_id: int) -> None:
+    def __init__(self, client: Any, scrape_id: str) -> None:
         self._client = client
         self._scrape_id = scrape_id
 

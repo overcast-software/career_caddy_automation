@@ -16,7 +16,7 @@ from typing import Literal
 from urllib.parse import urljoin
 
 import httpx
-from pydantic import BaseModel, Field, PositiveInt
+from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
 # Models
@@ -33,7 +33,7 @@ class APIResponse(BaseModel):
 class JobPostCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     description: str | None = None
-    company_id: int = Field(..., gt=0)
+    company_id: str = Field(..., min_length=1)
     location: str | None = Field(None, max_length=100)
     salary_min: int | None = Field(None, ge=0)
     salary_max: int | None = Field(None, ge=0)
@@ -240,7 +240,7 @@ async def search_companies(
     return await api.get("/api/v1/companies/", params=params)
 
 
-async def get_companies(api: ApiClient, id: int | None = None) -> str:
+async def get_companies(api: ApiClient, id: str | None = None) -> str:
     """Fetch companies. Pass id to retrieve a single company; omit for the full list."""
     if id is not None:
         return await api.get(f"/api/v1/companies/{id}/")
@@ -352,7 +352,7 @@ async def create_job_post_with_company_check(
         if company_search.get("success"):
             companies = company_search.get("data", {}).get("companies", [])
             if companies:
-                company_id = int(companies[0].get("id"))
+                company_id = companies[0].get("id")
 
         if company_id is None:
             create_result = json.loads(
@@ -367,7 +367,7 @@ async def create_job_post_with_company_check(
                 )
             )
             if create_result.get("success"):
-                company_id = int(create_result.get("data", {}).get("data", {}).get("id"))
+                company_id = create_result.get("data", {}).get("data", {}).get("id")
             else:
                 return json.dumps(
                     APIResponse(
@@ -420,7 +420,7 @@ async def search_job_posts(
     query: str | None = None,
     title: str | None = None,
     company: str | None = None,
-    company_id: int | None = None,
+    company_id: str | None = None,
     sort: str | None = None,
     page_size: int | None = None,
 ) -> str:
@@ -443,7 +443,7 @@ async def search_job_posts(
 
 async def get_job_posts(
     api: ApiClient,
-    id: int | None = None,
+    id: str | None = None,
     sort: str | None = None,
     order: str | None = None,
     page: int | None = None,
@@ -466,7 +466,7 @@ async def get_job_posts(
 
 async def update_job_post(
     api: ApiClient,
-    job_post_id: PositiveInt,
+    job_post_id: str,
     title: str | None = None,
     description: str | None = None,
     location: str | None = None,
@@ -476,7 +476,7 @@ async def update_job_post(
     remote_ok: bool | None = None,
     link: str | None = None,
     posted_date: str | None = None,
-    company_id: int | None = None,
+    company_id: str | None = None,
 ) -> str:
     """Update an existing job post's attributes or company relationship."""
     attributes = {}
@@ -521,7 +521,7 @@ async def update_job_post(
 
 async def create_job_application(
     api: ApiClient,
-    job_post_id: PositiveInt,
+    job_post_id: str,
     status: str = "applied",
     notes: str | None = None,
     applied_at: str | None = None,
@@ -545,9 +545,9 @@ async def create_job_application(
 
 async def get_job_applications(
     api: ApiClient,
-    id: PositiveInt | None = None,
+    id: str | None = None,
     company: str | None = None,
-    company_id: PositiveInt | None = None,
+    company_id: str | None = None,
     status: str | None = None,
     query: str | None = None,
     sort: _APPLICATION_SORT_FIELDS | None = None,
@@ -585,18 +585,18 @@ async def get_job_applications(
     return await api.get("/api/v1/job-applications/", params=params)
 
 
-async def get_applications_for_job_post(api: ApiClient, job_post_id: PositiveInt) -> str:
+async def get_applications_for_job_post(api: ApiClient, job_post_id: str) -> str:
     """Fetch all job applications linked to a specific job post."""
     return await api.get(f"/api/v1/job-posts/{job_post_id}/job-applications/")
 
 
 async def update_job_application(
     api: ApiClient,
-    application_id: PositiveInt,
+    application_id: str,
     status: str | None = None,
     notes: str | None = None,
     applied_at: str | None = None,
-    company_id: int | None = None,
+    company_id: str | None = None,
 ) -> str:
     """Update a job application's status, notes, or company association."""
     attributes = {}
@@ -634,7 +634,7 @@ async def get_career_data(api: ApiClient) -> str:
 
 async def get_resumes(
     api: ApiClient,
-    id: int | None = None,
+    id: str | None = None,
     favorite: bool | None = None,
     page: int | None = None,
     per_page: int | None = None,
@@ -655,8 +655,8 @@ async def get_resumes(
 async def create_scrape(
     api: ApiClient,
     url: str,
-    job_post_id: int | None = None,
-    company_id: int | None = None,
+    job_post_id: str | None = None,
+    company_id: str | None = None,
     status: str | None = None,
     attended: bool = False,
 ) -> str:
@@ -726,12 +726,12 @@ async def fetch_profile_readiness(api: ApiClient, hostname: str) -> tuple[bool, 
 
 async def get_scrapes(
     api: ApiClient,
-    id: int | None = None,
+    id: str | None = None,
     sort: str | None = None,
     page: int | None = None,
     per_page: int | None = None,
     status: str | None = None,
-    job_post_id: int | None = None,
+    job_post_id: str | None = None,
 ) -> str:
     """Fetch scrape records."""
     if id is not None:
@@ -752,7 +752,7 @@ async def get_scrapes(
 
 async def update_scrape(
     api: ApiClient,
-    scrape_id: PositiveInt,
+    scrape_id: str,
     status: str | None = None,
     job_content: str | None = None,
     url: str | None = None,
@@ -784,9 +784,9 @@ async def update_scrape(
 
 async def get_questions(
     api: ApiClient,
-    id: int | None = None,
-    company_id: int | None = None,
-    job_post_id: int | None = None,
+    id: str | None = None,
+    company_id: str | None = None,
+    job_post_id: str | None = None,
     page: int | None = None,
     per_page: int | None = None,
 ) -> str:
@@ -807,8 +807,8 @@ async def get_questions(
 
 async def get_answers(
     api: ApiClient,
-    id: int | None = None,
-    question_id: int | None = None,
+    id: str | None = None,
+    question_id: str | None = None,
     favorite: bool | None = None,
     page: int | None = None,
     per_page: int | None = None,
@@ -828,7 +828,7 @@ async def get_answers(
     return await api.get("/api/v1/answers/", params=params)
 
 
-async def score_job_post(api: ApiClient, job_post_id: PositiveInt) -> str:
+async def score_job_post(api: ApiClient, job_post_id: str) -> str:
     """Score a job post against the user's career data."""
     payload = {
         "data": {
@@ -842,8 +842,8 @@ async def score_job_post(api: ApiClient, job_post_id: PositiveInt) -> str:
 
 async def get_scores(
     api: ApiClient,
-    id: int | None = None,
-    job_post_id: int | None = None,
+    id: str | None = None,
+    job_post_id: str | None = None,
     page: int | None = None,
     per_page: int | None = None,
 ) -> str:

@@ -138,7 +138,7 @@ JobApplicationStatus = Literal[
 class FollowupResult(BaseModel):
     """Output schema for the stage-3 follow-up processor."""
 
-    application_id: int | None = Field(
+    application_id: str | None = Field(
         description=(
             "ID of the matched job_application, or null if no confident match. "
             "The orchestrator does NOT create new applications; null means skip."
