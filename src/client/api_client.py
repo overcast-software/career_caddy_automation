@@ -659,6 +659,7 @@ async def create_scrape(
     company_id: int | None = None,
     status: str | None = None,
     attended: bool = False,
+    auto_score: bool | None = None,
 ) -> str:
     """Create a scrape record.
 
@@ -670,12 +671,21 @@ async def create_scrape(
     snake_case (it does not dasherize JSON:API attribute keys). When
     ``False`` (the default) the attribute is omitted, so existing call
     sites send a byte-identical payload.
+
+    ``auto_score`` controls whether the api scores the post once the scrape
+    lands. Left ``None`` (the default) the attribute is omitted, so the api
+    keeps its own default (score on) and existing call sites send a
+    byte-identical payload. Pass ``False`` for free-tier enrichment that must
+    never spend scoring tokens (AUTO-29 known-good auto-enrichment). The api
+    reads ``auto_score`` snake_case alongside ``attended``.
     """
     attributes: dict = {"url": url}
     if status:
         attributes["status"] = status
     if attended:
         attributes["attended"] = True
+    if auto_score is not None:
+        attributes["auto_score"] = auto_score
     relationships = {}
     if job_post_id is not None:
         relationships["job-post"] = {"data": {"type": "job-post", "id": str(job_post_id)}}
