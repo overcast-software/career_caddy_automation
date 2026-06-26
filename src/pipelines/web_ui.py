@@ -119,11 +119,14 @@ def _logfire_toolset():
     token = os.environ.get("LOGFIRE_READ_TOKEN")
     if not token:
         return None
-    from pydantic_ai.mcp import MCPServerStdio
+    from fastmcp.client.transports import StdioTransport
+    from pydantic_ai.mcp import MCPToolset
 
-    return MCPServerStdio(
-        command="uvx",
-        args=["logfire-mcp@latest", f"--read-token={token}"],
+    return MCPToolset(
+        StdioTransport(
+            command="uvx",
+            args=["logfire-mcp@latest", f"--read-token={token}"],
+        )
     )
 
 
@@ -159,13 +162,13 @@ def build_agent_direct() -> tuple[Agent, CareerCaddyDeps]:
 
 def build_agent_mcp(mcp_url: str) -> Agent:
     """Build an agent that talks to Career Caddy via the public MCP endpoint."""
-    from pydantic_ai.mcp import MCPServerStreamableHTTP
+    from pydantic_ai.mcp import MCPToolset
 
     model = get_model("caddy")
     token = os.environ["CC_API_TOKEN"]
 
-    server = MCPServerStreamableHTTP(
-        url=mcp_url,
+    server = MCPToolset(
+        mcp_url,
         # MCP public_server.verify_token() expects Bearer + forwards to
         # api/v1/me/. This is the MCP transport's auth, not the api's;
         # do NOT switch to Api-Key here.

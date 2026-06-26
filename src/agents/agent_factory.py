@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic_ai import Agent
+from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
@@ -235,7 +236,9 @@ def get_agent(role: str, **overrides) -> Agent:
     if deps_type is not None:
         kwargs["deps_type"] = deps_type
     if history_processors:
-        kwargs["history_processors"] = history_processors
+        # pydantic-ai 2.0 replaced the history_processors kwarg with the
+        # capabilities API; ProcessHistory wraps each processor callable.
+        kwargs["capabilities"] = [ProcessHistory(p) for p in history_processors]
 
     return Agent(model, **kwargs)
 
@@ -285,9 +288,10 @@ def register_defaults() -> None:
     )
 
     try:
-        from pydantic_ai.mcp import MCPServerStdio
+        from fastmcp.client.transports import StdioTransport
+        from pydantic_ai.mcp import MCPToolset
 
-        def _email_mcp_factory() -> "MCPServerStdio":
+        def _email_mcp_factory() -> "MCPToolset":
             """Spawn the email MCP server matching CADDY_EMAIL_BACKEND.
 
             Both backends expose identical tool names (list_emails, read_email,
@@ -299,7 +303,9 @@ def register_defaults() -> None:
             script = (
                 "mcp_servers/imap_server.py" if backend == "imap" else "mcp_servers/email_server.py"
             )
-            return MCPServerStdio("python", args=[script], env=os.environ.copy())
+            return MCPToolset(
+                StdioTransport(command="python", args=[script], env=os.environ.copy())
+            )
 
         register_agent(
             "email_classifier",
@@ -366,8 +372,12 @@ def register_defaults() -> None:
                     "and extract the job title and one primary job posting URL."
                 ),
                 toolset_factories=[
-                    lambda: MCPServerStdio(
-                        "python", args=["mcp_servers/email_server.py"], env=os.environ.copy()
+                    lambda: MCPToolset(
+                        StdioTransport(
+                            command="python",
+                            args=["mcp_servers/email_server.py"],
+                            env=os.environ.copy(),
+                        )
                     ),
                 ],
             ),
@@ -382,11 +392,15 @@ def register_defaults() -> None:
                     "given URL. Return the raw text."
                 ),
                 toolset_factories=[
-                    lambda: MCPServerStdio(
-                        "python", args=["mcp_servers/browser_server.py"], env=os.environ.copy()
+                    lambda: MCPToolset(
+                        StdioTransport(
+                            command="python",
+                            args=["mcp_servers/browser_server.py"],
+                            env=os.environ.copy(),
+                        )
                     ),
                 ],
             ),
         )
     except ImportError:
-        pass  # fastmcp not installed — MCP-based agents unavailable
+        pass  # pydantic-ai MCP / fastmcp transport unavailable — MCP-based agents skipped
