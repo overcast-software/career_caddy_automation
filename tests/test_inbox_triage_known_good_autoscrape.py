@@ -33,6 +33,7 @@ from unittest.mock import AsyncMock, MagicMock
 import scripts.inbox_triage as it
 
 FLAG = "CADDY_FORWARD_AUTO_SCRAPE_KNOWN_GOOD"
+ATTENDED_FLAG = "CADDY_FORWARD_ATTENDED_KNOWN_GOOD"
 # Real NanoID-shaped id — numeric-string ids would mask an int()-cast regression.
 POST_ID = "V30p4hHABQ"
 
@@ -170,6 +171,44 @@ class TestEnrichKnownGood:
         outcome = asyncio.run(it._enrich_known_good(api, POST_ID, "https://acme.com/jobs/1"))
         assert outcome is None
         assert _scrape_post_attrs(api) == []
+
+
+# ---------------------------------------------------------------------------
+# Attended-routing gate (CC-97): the hold must NOT be marked attended unless
+# CADDY_FORWARD_ATTENDED_KNOWN_GOOD is explicitly enabled. Default OFF keeps
+# email scrapes on the unattended queue so a normal runner actually processes
+# them — never stranded on the attended partition (the CC-96 brownout repro).
+# ---------------------------------------------------------------------------
+
+
+class TestAttendedKnownGoodGate:
+    def test_flag_off_omits_attended(self, monkeypatch):
+        # Default (flag unset): the hold goes to the unattended queue, so
+        # create_scrape omits the `attended` attribute entirely.
+        monkeypatch.delenv(ATTENDED_FLAG, raising=False)
+        api = _make_api(profile=_profile(is_known_good=True, tier="verified"))
+        outcome = asyncio.run(it._enrich_known_good(api, POST_ID, "https://acme.com/jobs/1"))
+        assert outcome == "created"
+        attrs = _scrape_post_attrs(api)
+        assert len(attrs) == 1
+        assert "attended" not in attrs[0]
+
+    def test_flag_on_marks_attended_true(self, monkeypatch):
+        monkeypatch.setenv(ATTENDED_FLAG, "1")
+        api = _make_api(profile=_profile(is_known_good=True, tier="verified"))
+        outcome = asyncio.run(it._enrich_known_good(api, POST_ID, "https://acme.com/jobs/1"))
+        assert outcome == "created"
+        attrs = _scrape_post_attrs(api)
+        assert attrs[0]["attended"] is True
+        # Attended routing must not change the free guarantee.
+        assert attrs[0]["auto_score"] is False
+
+    def test_flag_falsey_value_omits_attended(self, monkeypatch):
+        # A non-truthy value is treated as OFF, same as unset.
+        monkeypatch.setenv(ATTENDED_FLAG, "0")
+        api = _make_api(profile=_profile(is_known_good=True, tier="verified"))
+        asyncio.run(it._enrich_known_good(api, POST_ID, "https://acme.com/jobs/1"))
+        assert "attended" not in _scrape_post_attrs(api)[0]
 
 
 # ---------------------------------------------------------------------------

@@ -135,6 +135,24 @@ Optional:
 - `CADDY_EMAIL_BACKEND` — `notmuch` (default) or `imap`
 - `LOGFIRE_READ_TOKEN` — only needed if you want MCP / agents to query logfire reads
 
+#### Known-good auto-enrichment flags (caddy-inbox, both default OFF)
+
+caddy-inbox creates JobPosts only; it does NOT auto-scrape unless you opt in.
+Two independent gates, read in `scripts/inbox_triage.py`:
+
+- `CADDY_FORWARD_AUTO_SCRAPE_KNOWN_GOOD` — when truthy
+  (`1`/`true`/`yes`/`on`), each new JobPost on a *known-good* domain also
+  gets a dedupe-guarded `hold` scrape with `auto_score=False` (free Tier-0
+  enrichment, never spends tokens). OFF → JobPost-only.
+- `CADDY_FORWARD_ATTENDED_KNOWN_GOOD` — when truthy, that enrichment hold is
+  marked `attended=True` so ONLY an attended runner (`make runner
+  ARGS="--attended"`) claims it. **Keep this OFF unless an attended runner is
+  actually running.** An `attended=True` hold is never claimed by a normal
+  runner — with no attended runner operating, it sits in `hold` forever
+  (it never crosses to the unattended queue). OFF → the hold goes to the
+  normal unattended queue and gets processed. See CC-96/CC-97 (the
+  2026-06-26 claim-next attended-partition brownout).
+
 ### Self-hosting against your own Career Caddy domain
 
 cc_auto talks to Career Caddy entirely over HTTP — there are no Python

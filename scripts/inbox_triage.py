@@ -175,6 +175,37 @@ def _auto_scrape_known_good_enabled() -> bool:
     }
 
 
+def _attended_known_good_enabled() -> bool:
+    """Opt-in gate for routing a known-good enrichment hold to the operator's
+    ATTENDED runner (default OFF — the *safe* default, load-bearing).
+
+    Mirrors ``_auto_scrape_known_good_enabled``'s truthy-string contract and
+    reads ``CADDY_FORWARD_ATTENDED_KNOWN_GOOD`` — the same env the deleted
+    ``src/pollers/email_catchall.py`` used for attended routing (commit
+    2efa701, rubbed out by AUTO-26). AUTO-29 re-ported the known-good
+    enrichment into this module but dropped the attended gate, so the live
+    producer only ever created *unattended* holds; this restores the gate
+    explicitly so the behaviour is intentional, tested, and documented rather
+    than an accident of the re-port.
+
+    Default OFF is load-bearing: an ``attended=True`` ``hold`` is claimed ONLY
+    by an attended runner (``make runner ARGS="--attended"``, warm
+    cookies/login); default/unattended runners skip the attended partition
+    entirely. While no attended runner is operated, an attended hold sits in
+    ``hold`` forever — it never crosses back to the unattended queue. Leaving
+    this OFF sends new email scrapes to the normal unattended queue so they
+    actually get processed. Flip it ON only when an attended runner is
+    actually running. See CC-96/CC-97: an abandoned attended claim is exactly
+    what brownout-wedged the api's ``claim-next`` consumer on 2026-06-26.
+    """
+    return os.environ.get("CADDY_FORWARD_ATTENDED_KNOWN_GOOD", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 async def _enrich_known_good(api: ApiClient, post_id, url: str) -> str | None:
     """Free-tier auto-enrichment for a JobPost on a known-good domain.
 
@@ -188,6 +219,12 @@ async def _enrich_known_good(api: ApiClient, post_id, url: str) -> str | None:
     benign value and never propagates, so JobPost creation is unaffected.
     Dedupe-aware: skips when a scrape already exists for the post (ports the
     ``process_tagged._ensure_hold_scrape`` pattern, adding ``auto_score``).
+
+    Queue routing: the hold is UNATTENDED by default so a normal scrape runner
+    claims it. Only when ``CADDY_FORWARD_ATTENDED_KNOWN_GOOD`` is enabled (see
+    ``_attended_known_good_enabled``) is it marked ``attended=True`` for the
+    operator's attended runner. Default OFF — never strand a hold on the
+    attended partition while no attended runner is operated (CC-96/CC-97).
 
     Returns ``"created"`` when a hold scrape was queued, ``"exists"`` when one
     was already present, ``"skip"`` when the host isn't known-good, or
@@ -217,8 +254,16 @@ async def _enrich_known_good(api: ApiClient, post_id, url: str) -> str | None:
         except Exception as exc:
             logger.warning("  known-good scrape lookup failed for jp %s: %s", post_id, exc)
 
+        # Default OFF → unattended hold (any runner claims it). ON → attended
+        # hold for the operator's attended runner only. See CC-96/CC-97.
+        attended = _attended_known_good_enabled()
         raw = await create_scrape(
-            api, url=url, job_post_id=post_id, status="hold", auto_score=False
+            api,
+            url=url,
+            job_post_id=post_id,
+            status="hold",
+            attended=attended,
+            auto_score=False,
         )
         resp = json.loads(raw)
         if resp.get("success"):
