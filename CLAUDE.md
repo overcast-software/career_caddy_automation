@@ -180,6 +180,15 @@ indexes live in `src/observability/mongo_client.py::get_db()`; domain
 APIs (`start_run`, `record_email`, etc.) in
 `src/observability/triage_store.py` and siblings.
 
+**Opt-out: `CADDY_OBSERVABILITY`.** Observability is on by default. To
+run cc_auto without Mongo at all — no sidecar, no connect attempt, no
+"mongo unreachable" warning, no 2s server-selection timeout per run —
+set `CADDY_OBSERVABILITY` to an off-value: `0` / `false` / `no` / `off`
+(whitespace- and case-insensitive). `get_db()` then short-circuits to
+`None` before pymongo is imported, and every writer skips silently (the
+domain APIs already no-op on a `None` db). Unset or any other value
+keeps observability enabled — fully backward-compatible.
+
 Legacy: `src/db.py` (orphan SQLite shim from commit e26f787) is slated
 for deletion alongside the Mongo introduction.
 

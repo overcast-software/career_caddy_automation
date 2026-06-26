@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_URI = "mongodb://localhost:27017/cc_auto"
 DEFAULT_DB_NAME = "cc_auto"
 
+# Explicit opt-out values for ``CADDY_OBSERVABILITY``. Observability is
+# enabled by default (unset / any other value); only these disable it.
+_OBSERVABILITY_OFF_VALUES = {"0", "false", "no", "off"}
+
 
 def _db_name_from_uri(uri: str) -> str:
     """Extract the database name from a Mongo connection URI.
@@ -38,11 +42,22 @@ def _db_name_from_uri(uri: str) -> str:
 
 @lru_cache(maxsize=1)
 def get_db():
-    """Return the cached ``pymongo.database.Database``.
+    """Return the cached ``pymongo.database.Database``, or ``None`` when
+    observability is disabled.
+
+    Setting ``CADDY_OBSERVABILITY`` to an off-value (``0``/``false``/``no``/
+    ``off``, case- and whitespace-insensitive) short-circuits before pymongo
+    is imported or any connection is attempted — so no 2s server-selection
+    timeout and no "mongo unreachable" warning when Mongo is absent. Unset
+    (the default) or any other value keeps observability enabled.
 
     Lazy-imports pymongo so test environments that don't need observability
     can skip the dependency. Builds indexes on first call.
     """
+    if os.environ.get("CADDY_OBSERVABILITY", "").strip().lower() in _OBSERVABILITY_OFF_VALUES:
+        logger.debug("observability disabled via CADDY_OBSERVABILITY; skipping mongo")
+        return None
+
     from pymongo import ASCENDING, MongoClient
 
     uri = os.environ.get("MONGODB_URI", DEFAULT_URI)
