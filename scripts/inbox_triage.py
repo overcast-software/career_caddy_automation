@@ -38,6 +38,7 @@ import os
 import signal
 import subprocess
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 from src.agents.email_agents import (
     FollowupResult,
@@ -52,7 +53,10 @@ from src.client.api_client import (
     ApiClient,
     create_job_post_minimal,
     create_job_post_with_company_check,
+    create_scrape,
+    fetch_profile_readiness,
     get_job_applications,
+    get_scrapes,
     update_job_application,
 )
 from src.client.toolset import CareerCaddyDeps
@@ -154,11 +158,92 @@ def _load_email_text(email_id: str) -> str:
     return result.stdout
 
 
+def _auto_scrape_known_good_enabled() -> bool:
+    """Opt-in gate for known-good free-tier auto-enrichment (default OFF).
+
+    Mirrors ``process_tagged._auto_scrape_enabled`` but reads the
+    ``CADDY_FORWARD_AUTO_SCRAPE_KNOWN_GOOD`` flag — the same env the deleted
+    ``email_catchall`` poller used. AUTO-26 removed that file in the
+    IMAP→notmuch consolidation; AUTO-29 re-ports the behavior into the live
+    notmuch triage path. Off unless explicitly enabled.
+    """
+    return os.environ.get("CADDY_FORWARD_AUTO_SCRAPE_KNOWN_GOOD", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+async def _enrich_known_good(api: ApiClient, post_id, url: str) -> str | None:
+    """Free-tier auto-enrichment for a JobPost on a known-good domain.
+
+    Doug's Phase 3 ("morning descriptions, only when free"): if the post's
+    host is known-good, its api-side extraction is the $0 deterministic
+    Tier-0 CSS pass (never an LLM), so a hold scrape fills the description
+    without spending tokens. ``auto_score=False`` guarantees scoring tokens
+    are never spent either.
+
+    Fully fail-safe: any error — including a readiness miss — returns a
+    benign value and never propagates, so JobPost creation is unaffected.
+    Dedupe-aware: skips when a scrape already exists for the post (ports the
+    ``process_tagged._ensure_hold_scrape`` pattern, adding ``auto_score``).
+
+    Returns ``"created"`` when a hold scrape was queued, ``"exists"`` when one
+    was already present, ``"skip"`` when the host isn't known-good, or
+    ``None`` on any error.
+    """
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+        if host.startswith("www."):
+            host = host[4:]
+        if not host:
+            return None
+        readiness = await fetch_profile_readiness(api, host)
+        if readiness is None:
+            return "skip"
+        is_known_good, tier = readiness
+        if not (is_known_good or str(tier) == "0"):
+            return "skip"
+
+        # Dedupe-aware: skip create if any scrape already exists for the post.
+        try:
+            existing_raw = await get_scrapes(api, job_post_id=post_id, per_page=1)
+            existing = json.loads(existing_raw)
+            if existing.get("success"):
+                rows = (existing.get("data") or {}).get("data") or []
+                if rows:
+                    return "exists"
+        except Exception as exc:
+            logger.warning("  known-good scrape lookup failed for jp %s: %s", post_id, exc)
+
+        raw = await create_scrape(
+            api, url=url, job_post_id=post_id, status="hold", auto_score=False
+        )
+        resp = json.loads(raw)
+        if resp.get("success"):
+            return "created"
+        logger.warning(
+            "  known-good scrape create failed for jp %s: %s", post_id, resp.get("error")
+        )
+        return None
+    except Exception as exc:
+        logger.warning("  known-good enrichment raised for %s: %s", url, exc)
+        return None
+
+
 async def _create_posts_from_urls(
     api: ApiClient, urls, created_acc: list[dict] | None = None
 ) -> dict:
-    """Create a JobPost per extracted URL. NO scrape is created — the user
-    initiates scrapes from the UI on posts they want pulled.
+    """Create a JobPost per extracted URL.
+
+    By default NO scrape is created — the user initiates scrapes from the UI
+    on posts they want pulled. The one exception is free-tier auto-enrichment
+    (AUTO-29): when ``CADDY_FORWARD_AUTO_SCRAPE_KNOWN_GOOD`` is set, each
+    successful post on a *known-good* domain also gets a dedupe-guarded hold
+    scrape with ``auto_score=False`` (see ``_enrich_known_good``) so
+    ``/job-posts`` shows descriptions by morning without spending tokens.
+    The enrichment is fully fail-safe, so it can never break JobPost creation.
 
     Outcome per URL is read from the api response:
       201 + new resource          → fresh create
@@ -172,6 +257,8 @@ async def _create_posts_from_urls(
     created: list[str] = []
     duplicates: list[str] = []
     failed: list[str] = []
+    scrapes_queued = 0
+    auto_scrape_known_good = _auto_scrape_known_good_enabled()
     for link in urls:
         desc = link.description or None
         try:
@@ -245,7 +332,25 @@ async def _create_posts_from_urls(
                         "source": "email_url",
                     }
                 )
-    return {"created": created, "duplicates": duplicates, "failed": failed}
+
+        # AUTO-29: free-tier auto-enrichment for known-good domains. Opt-in
+        # (flag default OFF), fail-safe, dedupe-aware, never scores. No-op for
+        # any post whose host isn't known-good. Runs for both fresh creates
+        # and dedupe hits — the dedupe guard inside skips posts already
+        # carrying a scrape.
+        if auto_scrape_known_good and post_id is not None:
+            outcome = await _enrich_known_good(api, post_id, link.url)
+            if outcome == "created":
+                scrapes_queued += 1
+                logger.info("  known-good: hold scrape queued for jp %s (%s)", post_id, link.url)
+            elif outcome == "exists":
+                logger.info("  known-good: scrape already present for jp %s", post_id)
+    return {
+        "created": created,
+        "duplicates": duplicates,
+        "failed": failed,
+        "scrapes_queued": scrapes_queued,
+    }
 
 
 async def _create_inline_job_post(
@@ -497,10 +602,11 @@ async def _triage_one(
                 await source.add_tags(meta.thread_id, ["caddy_processed"])
                 tags.add("caddy_processed")
             logger.info(
-                "  stage5: created=%d duplicates=%d failed=%d",
+                "  stage5: created=%d duplicates=%d failed=%d scrapes_queued=%d",
                 len(url_outcome["created"]),
                 len(url_outcome["duplicates"]),
                 len(url_outcome["failed"]),
+                url_outcome.get("scrapes_queued", 0),
             )
             if url_outcome["failed"]:
                 final_outcome = "new_failed"
