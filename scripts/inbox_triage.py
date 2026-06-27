@@ -474,11 +474,18 @@ async def _triage_one(
         return TriageOutcome(outcome=final_outcome, tags_added=sorted(tags - initial_tags))
 
     try:
+        # All tags are read from / written to the matched MESSAGE
+        # (``meta.id``), never its thread. ``meta.tags`` is the message's own
+        # tag set, and ``add_tags`` targets ``id:<meta.id>`` — so a forward
+        # that shares a thread with an already-processed original is judged on
+        # its own state and can't be poisoned by (or poison) its siblings
+        # (AUTO-32). The same-job double-post is prevented by JobPost dedupe
+        # (canonical_link), not by thread-tag skipping.
         # Stage 1 — classify (only if not yet evaluated).
         if "evaluated" not in tags:
             is_job = await _run_classify(classify_agent, email_id)
             new_tags = ["evaluated"] + (["job_post"] if is_job else [])
-            await source.add_tags(meta.thread_id, new_tags)
+            await source.add_tags(meta.id, new_tags)
             tags.update(new_tags)
             logger.info("[%s] %s  %s", "JOB" if is_job else "---", email_id, meta.subject)
             if not is_job:
@@ -496,7 +503,7 @@ async def _triage_one(
                 new_tags.append("follow_up")
             if is_inline:
                 new_tags.append("inline_post")
-            await source.add_tags(meta.thread_id, new_tags)
+            await source.add_tags(meta.id, new_tags)
             tags.update(new_tags)
             prefix = "FUP" if is_followup else ("DIR" if is_inline else "NEW")
             logger.info(
@@ -520,7 +527,7 @@ async def _triage_one(
             ):
                 ok = await _apply_status_update(api, res)
                 if ok:
-                    await source.add_tags(meta.thread_id, ["caddy_processed"])
+                    await source.add_tags(meta.id, ["caddy_processed"])
                     tags.add("caddy_processed")
                     final_outcome = "processed"
                     return _result()
@@ -555,7 +562,7 @@ async def _triage_one(
             if inline_outcome is None:
                 final_outcome = "inline_failed"
                 return _result()
-            await source.add_tags(meta.thread_id, ["caddy_processed"])
+            await source.add_tags(meta.id, ["caddy_processed"])
             tags.add("caddy_processed")
             logger.info(
                 "  inline-post %s: %s @ %s  conf=%.2f",
@@ -588,7 +595,7 @@ async def _triage_one(
                 return _result()
             extracted = await extract_job_urls(text)
             if not extracted.job_urls:
-                await source.add_tags(meta.thread_id, ["caddy_processed"])
+                await source.add_tags(meta.id, ["caddy_processed"])
                 tags.add("caddy_processed")
                 logger.info(
                     "  stage5: no URLs extracted from %s (%s)",
@@ -599,7 +606,7 @@ async def _triage_one(
                 return _result()
             url_outcome = await _create_posts_from_urls(api, extracted.job_urls, created_acc)
             if not url_outcome["failed"]:
-                await source.add_tags(meta.thread_id, ["caddy_processed"])
+                await source.add_tags(meta.id, ["caddy_processed"])
                 tags.add("caddy_processed")
             logger.info(
                 "  stage5: created=%d duplicates=%d failed=%d scrapes_queued=%d",

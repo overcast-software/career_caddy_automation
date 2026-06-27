@@ -41,11 +41,17 @@ class EmailSource(Protocol):
         3. tag:follow_up AND NOT tag:caddy_processed  → need stage-3 processor
 
         The orchestrator inspects ``meta.tags`` to pick which stage to run.
+        ``meta.tags`` MUST be the matched message's OWN tags, not the
+        thread union — a forward that shares a thread with an already-
+        processed original must not inherit its ``evaluated`` markers
+        (AUTO-32).
         """
         ...
 
-    async def add_tags(self, thread_id: str, tags: list[str]) -> None:
-        """Idempotent tag add. Safe to call with tags already present."""
+    async def add_tags(self, message_id: str, tags: list[str]) -> None:
+        """Idempotent tag add on a single MESSAGE by id. Safe to call with
+        tags already present. Must NOT tag thread siblings — tagging at
+        thread granularity poisons not-yet-processed forwards (AUTO-32)."""
         ...
 
     async def count_by_query(self, query: str, days_back: int = 14) -> int:

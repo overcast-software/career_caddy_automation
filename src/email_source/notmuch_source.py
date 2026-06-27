@@ -28,6 +28,68 @@ def _decode_subject(raw: str) -> str:
         return raw
 
 
+def _message_tags(message_id: str) -> set[str]:
+    """Return the OWN tags of a single message, by id.
+
+    notmuch ``search`` summaries report the **thread-union** tags, which
+    poison a freshly-forwarded job that shares a thread with an
+    already-processed sibling (AUTO-32): the forward inherits the
+    original alert's ``evaluated``/``caddy_processed`` and the
+    orchestrator short-circuits it to ``already_done``. Routing
+    decisions must read the matched message's own tags, so we resolve
+    them per-message. ``--output=tags id:<msgid>`` matches exactly one
+    message, so the union it returns IS that message's own tag set.
+    """
+    result = subprocess.run(
+        ["notmuch", "search", "--output=tags", f"id:{message_id}"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"notmuch search tags failed: {result.stderr.strip()}")
+    return {t.strip() for t in (result.stdout or "").splitlines() if t.strip()}
+
+
+def _matched_message_id(thread: dict) -> str | None:
+    """Extract the matched message id from a notmuch thread summary.
+
+    ``thread["query"][0]`` is the query for the messages that matched the
+    search (vs. ``[1]`` for the unmatched siblings). For a forward sharing
+    a thread with a processed original, only the forward matches the
+    pending query, so this is the forward's id — the message we must route
+    and tag. May be ``"id:a id:b ..."`` for multi-message matches; take the
+    first.
+    """
+    query_arr = thread.get("query") or []
+    if not query_arr or not query_arr[0]:
+        return None
+    raw_id = query_arr[0]
+    if raw_id.startswith("id:"):
+        raw_id = raw_id[3:]
+    # query_arr[0] may be "msg1 id:msg2 ..." for multi-message matches;
+    # take only the first message ID (used for content loading + tagging).
+    return raw_id.split(" id:")[0]
+
+
+def _thread_to_meta(thread: dict) -> EmailMeta | None:
+    """Build an EmailMeta for the matched message of a thread summary.
+
+    Tags come from the matched message's OWN tags (``_message_tags``), not
+    the thread union, so a new forward isn't read as done because of a
+    processed sibling. ``thread_id`` is kept for content-load context.
+    """
+    raw_id = _matched_message_id(thread)
+    if not raw_id:
+        return None
+    return EmailMeta(
+        id=raw_id,
+        subject=_decode_subject(thread.get("subject") or ""),
+        tags=_message_tags(raw_id),
+        thread_id=thread.get("thread", ""),
+    )
+
+
 # Compound query: an email needs processing if any stage is incomplete.
 #   (NOT tag:evaluated)                                  — stage 1
 #   (tag:job_post AND NOT tag:refined)                   — stage 2
@@ -56,32 +118,26 @@ class NotmuchSource:
         threads = json.loads(result.stdout) if result.stdout.strip() else []
         out: list[EmailMeta] = []
         for thread in threads:
-            query_arr = thread.get("query") or []
-            if not query_arr or not query_arr[0]:
-                continue
-            raw_id = query_arr[0]
-            if raw_id.startswith("id:"):
-                raw_id = raw_id[3:]
-            # query_arr[0] may be "msg1 id:msg2 ..." for multi-message threads;
-            # take only the first message ID (used for content loading).
-            raw_id = raw_id.split(" id:")[0]
-            thread_id = thread.get("thread", "")
-            out.append(
-                EmailMeta(
-                    id=raw_id,
-                    subject=_decode_subject(thread.get("subject") or ""),
-                    tags=set(thread.get("tags") or []),
-                    thread_id=thread_id,
-                )
-            )
+            meta = _thread_to_meta(thread)
+            if meta is not None:
+                out.append(meta)
         return out
 
-    async def add_tags(self, thread_id: str, tags: list[str]) -> None:
+    async def add_tags(self, message_id: str, tags: list[str]) -> None:
+        """Tag a single MESSAGE by id, never its whole thread.
+
+        Tagging ``thread:{id}`` (the pre-AUTO-32 behavior, commit 91a5dd1)
+        stamps a processed message's tags onto its not-yet-processed
+        siblings — e.g. processing an original ZipRecruiter alert poisons
+        the forward in the same thread with ``evaluated``/``caddy_processed``
+        so it's never triaged. The double-post guard belongs to JobPost
+        dedupe (canonical_link), not thread-tag skipping.
+        """
         if not tags:
             return
         args = [f"+{t}" for t in tags]
         subprocess.run(
-            ["notmuch", "tag", *args, "--", f"thread:{thread_id}"],
+            ["notmuch", "tag", *args, "--", f"id:{message_id}"],
             check=True,
             timeout=10,
         )
@@ -124,20 +180,7 @@ class NotmuchSource:
         threads = json.loads(result.stdout) if result.stdout.strip() else []
         out: list[EmailMeta] = []
         for thread in threads:
-            query_arr = thread.get("query") or []
-            if not query_arr or not query_arr[0]:
-                continue
-            raw_id = query_arr[0]
-            if raw_id.startswith("id:"):
-                raw_id = raw_id[3:]
-            raw_id = raw_id.split(" id:")[0]
-            thread_id = thread.get("thread", "")
-            out.append(
-                EmailMeta(
-                    id=raw_id,
-                    subject=_decode_subject(thread.get("subject") or ""),
-                    tags=set(thread.get("tags") or []),
-                    thread_id=thread_id,
-                )
-            )
+            meta = _thread_to_meta(thread)
+            if meta is not None:
+                out.append(meta)
         return out
