@@ -79,6 +79,43 @@ def test_record_email_writes_doc(fake_db):
     assert doc["network_failure"] is False
 
 
+def test_record_email_persists_introspection_when_present(fake_db):
+    """AUTO-33: the stage-E extraction-diagnostic sub-document lands under
+    ``introspection`` so the outcome self-explains from a Mongo query."""
+    intro = {
+        "body_chars": 570,
+        "body_url_count": 0,
+        "body_nontext_only": True,
+        "extract_kept": 0,
+        "extract_reasoning": "0 kept — html-only body",
+    }
+    triage_store.record_email(
+        "run-1",
+        "msg-html@example.com",
+        "Fwd: SWE",
+        "new_no_urls",
+        ["caddy_processed"],
+        introspection=intro,
+    )
+    doc = fake_db.triage_emails.inserts[0]
+    assert doc["introspection"] == intro
+    assert doc["introspection"]["body_nontext_only"] is True
+
+
+def test_record_email_omits_introspection_when_none(fake_db):
+    """Emails that exit before extraction carry no introspection — the key is
+    absent rather than a null, keeping those docs lean."""
+    triage_store.record_email(
+        "run-1",
+        "msg-early@example.com",
+        "Newsletter",
+        "not_job",
+        ["evaluated"],
+    )
+    doc = fake_db.triage_emails.inserts[0]
+    assert "introspection" not in doc
+
+
 def test_record_email_carries_exception_metadata(fake_db):
     triage_store.record_email(
         "run-1",

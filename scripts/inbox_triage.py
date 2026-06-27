@@ -1,13 +1,25 @@
-"""Orchestrator — classify, refine, and (where applicable) process follow-ups
-on a single sequential pass per email.
+"""Forward-path triage — a light pass over the emails Doug forwards to
+``forwarding@careercaddy.online``.
 
-Runs three stateless agents in order so they never race on the same
-notmuch/IMAP tags:
+Doug triages job mail himself in Thunderbird and forwards the keepers to the
+forward recipient; the forward IS the "evaluate this" signal. So this is a
+light pass, not a classifier gauntlet — two deterministic paths per forward:
 
-    stage 1 (classify)  →  tag `evaluated`; if job-related, tag `job_post`
-    stage 2 (refine)    →  tag `refined`; if correspondence, tag `follow_up`
-    stage 3 (followup)  →  find the matching job_application; on confident
-                           match, update its status and tag `caddy_processed`
+    stage 1 (classify)  →  one cheap "is this a job?" check; tag `evaluated`
+                           (a resume checkpoint) and `job_post` when it is.
+    stage E (extract)   →  render the body (html-only forwards included),
+                           extract links, create a JobPost per link, and hand
+                           known-good links to the poller as `hold` scrapes
+                           carrying `job_post_id` so the runner AUGMENTS the
+                           just-created post (never mints a second one).
+    stage I (inline)    →  fallback when a forward has no link: pull a
+                           link-less JobPost out of a JD pasted inline.
+
+`caddy_processed` is written on EVERY terminal path so the
+``NOT tag:caddy_processed`` selector never re-runs the LLMs on the backlog.
+All tag reads/writes are MESSAGE-granular (``meta.id``), never thread —
+a forward sharing a thread with an already-processed original is judged on
+its own state (AUTO-32). Refine + follow-up handling are deliberately gone.
 
 Backend is chosen by ``CADDY_EMAIL_BACKEND`` (``notmuch`` default, ``imap``
 when implemented).
@@ -35,18 +47,17 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 from dataclasses import dataclass, field
+from typing import Any
 from urllib.parse import urlsplit
 
 from src.agents.email_agents import (
-    FollowupResult,
     InlinePostResult,
     get_classify_agent,
-    get_followup_agent,
     get_inline_post_agent,
-    get_refine_agent,
 )
 from src.agents.url_extractor import extract_job_urls
 from src.client.api_client import (
@@ -55,12 +66,11 @@ from src.client.api_client import (
     create_job_post_with_company_check,
     create_scrape,
     fetch_profile_readiness,
-    get_job_applications,
     get_scrapes,
-    update_job_application,
 )
-from src.client.toolset import CareerCaddyDeps
 from src.email_source import EmailMeta, EmailSource, make_source
+from src.email_source.html_render import html_to_markdown
+from src.email_source.mime import extract_bodies
 from src.observability import (
     classify_exception,
     finish_run,
@@ -87,17 +97,15 @@ class TriageOutcome:
     counter, but Phase A's Mongo writer also wants the per-email tags-added
     diff so it lands in ``triage_emails``. Keeping both fields on one
     dataclass keeps the call site readable.
+
+    ``introspection`` (AUTO-33) is the optional extraction-diagnostic
+    sub-document built at stage E (see ``_build_introspection``); ``None``
+    for emails that exit before extraction or when the build fails.
     """
 
     outcome: str
     tags_added: list[str] = field(default_factory=list)
-
-
-def _caddy_deps() -> CareerCaddyDeps:
-    return CareerCaddyDeps(
-        api_token=os.environ["CC_API_TOKEN"],
-        base_url=os.environ.get("CC_API_BASE_URL", "http://localhost:8000"),
-    )
+    introspection: dict[str, Any] | None = None
 
 
 def _api_client() -> ApiClient:
@@ -107,37 +115,11 @@ def _api_client() -> ApiClient:
     )
 
 
-async def _current_app_status(api: ApiClient, application_id: str) -> str | None:
-    """Fetch the current status of a job_application so we can skip no-op
-    PATCHes. Returns None if the fetch fails — callers treat None as 'unknown'
-    and proceed with the update."""
-    try:
-        raw = await get_job_applications(api, id=application_id)
-        resp = json.loads(raw)
-        data = (resp.get("data") or {}).get("data") or resp.get("data")
-        if isinstance(data, dict):
-            attrs = data.get("attributes") or data
-            return attrs.get("status") if isinstance(attrs, dict) else None
-    except Exception as exc:
-        logger.warning("  could not fetch current status for app %s: %s", application_id, exc)
-    return None
-
-
 async def _run_classify(agent, email_id: str) -> bool:
     """Return True iff the email is job-related."""
     result = await agent.run(f"Classify email id: {email_id}")
     text = (result.output or "").strip().lower()
     return text.startswith("job_post")
-
-
-async def _run_refine(agent, email_id: str):
-    result = await agent.run(f"Refine email id: {email_id}")
-    return result.output
-
-
-async def _run_followup(agent, email_id: str, deps: CareerCaddyDeps) -> FollowupResult:
-    result = await agent.run(f"Process follow-up email id: {email_id}", deps=deps)
-    return result.output
 
 
 async def _run_inline_post(agent, email_id: str) -> InlinePostResult:
@@ -146,16 +128,78 @@ async def _run_inline_post(agent, email_id: str) -> InlinePostResult:
 
 
 def _load_email_text(email_id: str) -> str:
-    """Plain-text body of an email via `notmuch show`. Mirrors process_tagged."""
+    """Rendered body text of a forward via ``notmuch show --format=raw``.
+
+    Thunderbird forwards are frequently ``text/html``-only; the old
+    ``--format=text`` path returned notmuch's ``Non-text part: text/html``
+    placeholder (≈0 URLs) and every such forward dead-ended at
+    ``new_no_urls``. Here we pull the RAW message, extract its plain + html
+    bodies (recursing into forward-as-attachment nesting), and prefer plain
+    text — falling back to html rendered to markdown so the URL extractor
+    sees real links. ``--part=N`` was rejected: it needs a json round-trip
+    to resolve the html part index and is brittle.
+    """
     result = subprocess.run(
-        ["notmuch", "show", "--format=text", "--body=true", f"id:{email_id}"],
+        ["notmuch", "show", "--format=raw", f"id:{email_id}"],
         capture_output=True,
         text=True,
         timeout=30,
     )
     if result.returncode != 0:
         raise RuntimeError(f"notmuch show failed for {email_id}: {result.stderr.strip()}")
-    return result.stdout
+    plain, html = extract_bodies(result.stdout)
+    return plain if plain.strip() else html_to_markdown(html)
+
+
+# Matches http(s):// and mailto: URLs in the loaded body text. The negated
+# class stops at whitespace and the HTML delimiters that leak in from
+# ``href="..."`` attributes so a count isn't inflated by a trailing
+# quote/bracket.
+_BODY_URL_RE = re.compile(r"""(?:https?://|mailto:)[^\s"'<>)\]]+""")
+
+# The literal placeholder ``notmuch show --format=text`` emits in place of a
+# body when the only part is ``text/html`` (e.g. a Thunderbird forward). Its
+# presence with zero URLs is the html-only signature that silently starves the
+# URL extractor and produces ``new_no_urls``.
+_NONTEXT_MARKER = "Non-text part:"
+
+
+def _count_body_urls(text: str) -> int:
+    """Count http(s)/mailto URLs in the loaded body text (regex, no network)."""
+    return len(_BODY_URL_RE.findall(text))
+
+
+def _build_introspection(body_text: str, extracted: Any) -> dict[str, Any] | None:
+    """Extraction-diagnostic sub-document for the per-email Mongo record (AUTO-33).
+
+    Bakes the exact signals that made ``new_no_urls`` invisible in Mongo into
+    the ``triage_emails`` doc so the outcome self-explains from a query:
+
+    * ``body_chars`` — length of the loaded body text (570 for an html-only
+      forward vs ~36k for a multipart original — the tell at a glance).
+    * ``body_url_count`` — raw http(s)/mailto URLs the body held.
+    * ``body_nontext_only`` — the html-only signature: body carries the
+      ``Non-text part:`` placeholder AND held zero URLs.
+    * ``extract_kept`` — how many URLs the stage-E extractor kept.
+    * ``extract_reasoning`` — the extractor's "N kept, M dropped" line.
+
+    Pure observability — fully fail-safe. ANY error returns ``None`` so the
+    email's real outcome and Mongo record are never endangered.
+    """
+    try:
+        url_count = _count_body_urls(body_text)
+        intro: dict[str, Any] = {
+            "body_chars": len(body_text),
+            "body_url_count": url_count,
+            "body_nontext_only": _NONTEXT_MARKER in body_text and url_count == 0,
+        }
+        if extracted is not None:
+            intro["extract_kept"] = len(extracted.job_urls)
+            intro["extract_reasoning"] = extracted.reasoning
+        return intro
+    except Exception:
+        logger.debug("introspection build failed for stage-E email (non-fatal)", exc_info=True)
+        return None
 
 
 def _auto_scrape_known_good_enabled() -> bool:
@@ -233,17 +277,22 @@ async def _enrich_known_good(api: ApiClient, post_id, url: str) -> str | None:
 
 
 async def _create_posts_from_urls(
-    api: ApiClient, urls, created_acc: list[dict] | None = None
+    api: ApiClient,
+    urls,
+    created_acc: list[dict] | None = None,
+    auto_scrape_known_good: bool | None = None,
 ) -> dict:
     """Create a JobPost per extracted URL.
 
-    By default NO scrape is created — the user initiates scrapes from the UI
-    on posts they want pulled. The one exception is free-tier auto-enrichment
-    (AUTO-29): when ``CADDY_FORWARD_AUTO_SCRAPE_KNOWN_GOOD`` is set, each
-    successful post on a *known-good* domain also gets a dedupe-guarded hold
-    scrape with ``auto_score=False`` (see ``_enrich_known_good``) so
+    ``auto_scrape_known_good`` gates free-tier auto-enrichment (AUTO-29):
+    each successful post on a *known-good* domain also gets a dedupe-guarded
+    ``hold`` scrape carrying ``job_post_id`` (so the runner AUGMENTS that
+    post) with ``auto_score=False`` (see ``_enrich_known_good``) so
     ``/job-posts`` shows descriptions by morning without spending tokens.
-    The enrichment is fully fail-safe, so it can never break JobPost creation.
+    The forward path passes ``True``; ``None`` (the default for other callers
+    and tests) falls back to the ``CADDY_FORWARD_AUTO_SCRAPE_KNOWN_GOOD`` env
+    gate so that contract is untouched. The enrichment is fully fail-safe, so
+    it can never break JobPost creation.
 
     Outcome per URL is read from the api response:
       201 + new resource          → fresh create
@@ -258,7 +307,11 @@ async def _create_posts_from_urls(
     duplicates: list[str] = []
     failed: list[str] = []
     scrapes_queued = 0
-    auto_scrape_known_good = _auto_scrape_known_good_enabled()
+    enrich = (
+        auto_scrape_known_good
+        if auto_scrape_known_good is not None
+        else _auto_scrape_known_good_enabled()
+    )
     for link in urls:
         desc = link.description or None
         try:
@@ -338,7 +391,7 @@ async def _create_posts_from_urls(
         # any post whose host isn't known-good. Runs for both fresh creates
         # and dedupe hits — the dedupe guard inside skips posts already
         # carrying a scrape.
-        if auto_scrape_known_good and post_id is not None:
+        if enrich and post_id is not None:
             outcome = await _enrich_known_good(api, post_id, link.url)
             if outcome == "created":
                 scrapes_queued += 1
@@ -411,198 +464,82 @@ async def _create_inline_job_post(
     return "created"
 
 
-async def _apply_status_update(api: ApiClient, res: FollowupResult) -> bool:
-    """PATCH the application if the new status differs. Returns True on
-    success (including no-op)."""
-    assert res.application_id is not None
-    current = await _current_app_status(api, res.application_id)
-    if current and current == res.new_status:
-        logger.info("  app %s already %s — no update", res.application_id, current)
-        return True
-    try:
-        raw = await update_job_application(
-            api,
-            application_id=res.application_id,
-            status=res.new_status,
-            notes=res.notes,
-        )
-        resp = json.loads(raw)
-        if not resp.get("success"):
-            logger.warning("  update_job_application failed: %s", resp.get("error"))
-            return False
-        logger.info(
-            "  app %s: %s → %s  (%s)",
-            res.application_id,
-            current or "?",
-            res.new_status,
-            res.evidence[:80],
-        )
-        return True
-    except Exception as exc:
-        logger.exception("  update_job_application raised: %s", exc)
-        return False
-
-
 async def _triage_one(
     meta: EmailMeta,
     source: EmailSource,
     classify_agent,
-    refine_agent,
-    followup_agent,
     inline_post_agent,
     api: ApiClient,
-    deps: CareerCaddyDeps,
     created_acc: list[dict] | None = None,
 ) -> TriageOutcome:
-    """Drive a single email through whichever stages it still needs. Returns
-    the outcome bucket + tags-added diff for the summary counter and the
-    Mongo per-email record.
+    """Drive one forwarded email through the light forward-path flow. Returns
+    the outcome bucket + tags-added diff (+ extraction introspection) for the
+    summary counter and the Mongo per-email record.
 
-    Logs a per-email outcome line in `finally` so every email — even the
-    ones that fall through to "already_done" — produces one line that
-    maps email_id → outcome → tags-added. Without it, the run summary
-    "Done: already_done=2" reads as silence: you can't tell which email
-    got the [FUP] tag this pass vs. which was a passive scan of an
-    already-tagged thread.
+    Two paths only — see the module docstring. All tag reads/writes are
+    MESSAGE-granular (``meta.id``), never thread (AUTO-32), and
+    ``caddy_processed`` is written on EVERY terminal path so the
+    ``NOT tag:caddy_processed`` selector never re-runs the LLMs on the
+    backlog.
+
+    Logs a per-email outcome line in `finally` so every email — even the ones
+    that fall through to "already_done" — produces one line mapping
+    email_id → outcome → tags-added.
     """
     email_id = meta.id
     initial_tags = set(meta.tags)
     tags: set[str] = set(initial_tags)
     final_outcome = "already_done"
+    introspection: dict[str, Any] | None = None
 
     def _result() -> TriageOutcome:
-        return TriageOutcome(outcome=final_outcome, tags_added=sorted(tags - initial_tags))
+        return TriageOutcome(
+            outcome=final_outcome,
+            tags_added=sorted(tags - initial_tags),
+            introspection=introspection,
+        )
 
     try:
-        # Stage 1 — classify (only if not yet evaluated).
+        # Stage 1 — classify (only if not yet evaluated). `evaluated` is a
+        # cheap resume checkpoint: an already-classified forward skips the LLM
+        # call and resumes at extraction.
         if "evaluated" not in tags:
             is_job = await _run_classify(classify_agent, email_id)
             new_tags = ["evaluated"] + (["job_post"] if is_job else [])
-            await source.add_tags(meta.thread_id, new_tags)
+            await source.add_tags(meta.id, new_tags)
             tags.update(new_tags)
             logger.info("[%s] %s  %s", "JOB" if is_job else "---", email_id, meta.subject)
             if not is_job:
+                await source.add_tags(meta.id, ["caddy_processed"])
+                tags.add("caddy_processed")
                 final_outcome = "not_job"
                 return _result()
 
-        # Stage 2 — refine (only job-related, only if not yet refined).
-        if "job_post" in tags and "refined" not in tags:
-            refined = await _run_refine(refine_agent, email_id)
-            new_tags = ["refined"]
-            confident = refined.confidence >= CONFIDENCE_FLOOR
-            is_followup = refined.kind == "follow_up" and confident
-            is_inline = refined.kind == "direct_solicitation" and confident
-            if is_followup:
-                new_tags.append("follow_up")
-            if is_inline:
-                new_tags.append("inline_post")
-            await source.add_tags(meta.thread_id, new_tags)
-            tags.update(new_tags)
-            prefix = "FUP" if is_followup else ("DIR" if is_inline else "NEW")
-            logger.info(
-                "[%s] %s  conf=%.2f  %s",
-                prefix,
-                email_id,
-                refined.confidence,
-                refined.evidence[:80],
-            )
-            # Fall through to stage 5 for the new_post case (kind="new_post" or
-            # low-confidence). The early-return that used to live here silently
-            # dropped every job-board notification with a scrapeable URL.
-
-        # Stage 3 — follow-up processor (only if follow_up and not yet processed).
-        if "follow_up" in tags and "caddy_processed" not in tags:
-            res = await _run_followup(followup_agent, email_id, deps)
-            if (
-                res.application_id is not None
-                and res.new_status is not None
-                and res.confidence >= CONFIDENCE_FLOOR
-            ):
-                ok = await _apply_status_update(api, res)
-                if ok:
-                    await source.add_tags(meta.thread_id, ["caddy_processed"])
-                    tags.add("caddy_processed")
-                    final_outcome = "processed"
-                    return _result()
-                final_outcome = "update_failed"
-                return _result()
-            logger.info(
-                "  no confident application match for %s (conf=%.2f): %s",
-                email_id,
-                res.confidence,
-                res.notes[:120],
-            )
-            final_outcome = "unmatched"
+        # Stage E — extract links first. Render the body (html-only forwards
+        # included), pull URLs, and create a JobPost per link. Known-good links
+        # also get a `hold` scrape carrying `job_post_id` so the runner enriches
+        # THIS post rather than minting a second one (the augmentation contract).
+        try:
+            text = _load_email_text(email_id)
+        except RuntimeError as exc:
+            logger.warning("  load_email_text failed for %s: %s", email_id, exc)
+            final_outcome = "load_failed"
             return _result()
-
-        # Stage 4 — inline-post extractor (direct-solicitation emails: JD inline,
-        # no scrapeable URL). Creates a JobPost with link=NULL and
-        # source="email_direct" so the post is distinguishable from URL-scraped
-        # email-sourced posts.
-        if "inline_post" in tags and "caddy_processed" not in tags:
-            res = await _run_inline_post(inline_post_agent, email_id)
-            if not res.title or res.confidence < CONFIDENCE_FLOOR:
-                logger.info(
-                    "  inline-post low confidence for %s (conf=%.2f, title=%r): %s",
-                    email_id,
-                    res.confidence,
-                    res.title,
-                    res.evidence[:120],
-                )
-                final_outcome = "inline_unmatched"
-                return _result()
-            inline_outcome = await _create_inline_job_post(api, res, created_acc)
-            if inline_outcome is None:
-                final_outcome = "inline_failed"
-                return _result()
-            await source.add_tags(meta.thread_id, ["caddy_processed"])
-            tags.add("caddy_processed")
-            logger.info(
-                "  inline-post %s: %s @ %s  conf=%.2f",
-                inline_outcome,
-                res.title,
-                res.company or "—",
-                res.confidence,
+        extracted = await extract_job_urls(text)
+        # AUTO-33: bake the body/URL/extract diagnostics into the per-email
+        # record so the outcome (especially new_no_urls) explains itself from
+        # Mongo. Fail-safe: a build error yields None and never touches the
+        # real outcome.
+        introspection = _build_introspection(text, extracted)
+        if extracted.job_urls:
+            url_outcome = await _create_posts_from_urls(
+                api, extracted.job_urls, created_acc, auto_scrape_known_good=True
             )
-            final_outcome = f"inline_{inline_outcome}"
-            return _result()
-
-        # Stage 5 — URL-extract → create JobPost(s) for the default new_post case
-        # (a job-board notification with one or more scrapeable URLs, neither a
-        # follow-up correspondence nor an inline-JD recruiter pitch). NO scrape is
-        # created — the user initiates a scrape from the UI on posts they want
-        # pulled. This stage was the missing piece between caddy-classify+caddy-
-        # process (legacy two-daemon flow) and caddy-inbox (orchestrator); the
-        # refiner correctly tagged emails `new_post` but nothing acted on it.
-        if (
-            "refined" in tags
-            and "follow_up" not in tags
-            and "inline_post" not in tags
-            and "caddy_processed" not in tags
-        ):
-            try:
-                text = _load_email_text(email_id)
-            except RuntimeError as exc:
-                logger.warning("  stage5: load_email_text failed for %s: %s", email_id, exc)
-                final_outcome = "new_load_failed"
-                return _result()
-            extracted = await extract_job_urls(text)
-            if not extracted.job_urls:
-                await source.add_tags(meta.thread_id, ["caddy_processed"])
-                tags.add("caddy_processed")
-                logger.info(
-                    "  stage5: no URLs extracted from %s (%s)",
-                    email_id,
-                    extracted.reasoning[:120],
-                )
-                final_outcome = "new_no_urls"
-                return _result()
-            url_outcome = await _create_posts_from_urls(api, extracted.job_urls, created_acc)
             if not url_outcome["failed"]:
-                await source.add_tags(meta.thread_id, ["caddy_processed"])
+                await source.add_tags(meta.id, ["caddy_processed"])
                 tags.add("caddy_processed")
             logger.info(
-                "  stage5: created=%d duplicates=%d failed=%d scrapes_queued=%d",
+                "  extract: created=%d duplicates=%d failed=%d scrapes_queued=%d",
                 len(url_outcome["created"]),
                 len(url_outcome["duplicates"]),
                 len(url_outcome["failed"]),
@@ -617,7 +554,39 @@ async def _triage_one(
             final_outcome = "new_duplicate"
             return _result()
 
-        final_outcome = "already_done"
+        # Stage I — inline fallback (zero links only). A manually-forwarded
+        # recruiter email with the JD pasted inline still yields a link-less
+        # JobPost (link=NULL, source="email_direct"). Whatever the result,
+        # mark the forward processed so it stops re-matching.
+        res = await _run_inline_post(inline_post_agent, email_id)
+        if res.title and res.confidence >= CONFIDENCE_FLOOR:
+            inline_outcome = await _create_inline_job_post(api, res, created_acc)
+            await source.add_tags(meta.id, ["caddy_processed"])
+            tags.add("caddy_processed")
+            if inline_outcome is None:
+                final_outcome = "inline_failed"
+                return _result()
+            logger.info(
+                "  inline-post %s: %s @ %s  conf=%.2f",
+                inline_outcome,
+                res.title,
+                res.company or "—",
+                res.confidence,
+            )
+            final_outcome = f"inline_{inline_outcome}"
+            return _result()
+
+        # Inline too thin to stand as a post — still mark processed.
+        logger.info(
+            "  inline-post low confidence for %s (conf=%.2f, title=%r): %s",
+            email_id,
+            res.confidence,
+            res.title,
+            res.evidence[:120],
+        )
+        await source.add_tags(meta.id, ["caddy_processed"])
+        tags.add("caddy_processed")
+        final_outcome = "new_no_urls"
         return _result()
     finally:
         added = sorted(tags - initial_tags)
@@ -639,11 +608,8 @@ async def run_once(limit: int, backend: str | None, days_back: int) -> None:
         return
 
     classify_agent = get_classify_agent()
-    refine_agent = get_refine_agent()
-    followup_agent = get_followup_agent()
     inline_post_agent = get_inline_post_agent()
     api = _api_client()
-    deps = _caddy_deps()
 
     # Phase A1: open a Mongo run doc so every email this pass lands with
     # a foreign-key into one row in `triage_runs`. start_run returns None
@@ -657,20 +623,19 @@ async def run_once(limit: int, backend: str | None, days_back: int) -> None:
         tags_added: list[str] = []
         exception_class: str | None = None
         network_failure = False
+        introspection: dict[str, Any] | None = None
         try:
             triage = await _triage_one(
                 meta,
                 source,
                 classify_agent,
-                refine_agent,
-                followup_agent,
                 inline_post_agent,
                 api,
-                deps,
                 created_acc=created_acc,
             )
             outcome_bucket = triage.outcome
             tags_added = triage.tags_added
+            introspection = triage.introspection
         except Exception as exc:
             logger.exception("Triage raised for %s: %s", meta.id, exc)
             outcome_bucket, network_failure = classify_exception(exc)
@@ -684,6 +649,7 @@ async def run_once(limit: int, backend: str | None, days_back: int) -> None:
                 tags_added,
                 exception_class=exception_class,
                 network_failure=network_failure,
+                introspection=introspection,
             )
         counters[outcome_bucket] = counters.get(outcome_bucket, 0) + 1
 
@@ -705,14 +671,13 @@ async def run_once(limit: int, backend: str | None, days_back: int) -> None:
 
 
 # State queries used by --status. Same date scope as list_pending so
-# counts line up with what the daemon would see on a normal pass.
+# counts line up with what the daemon would see on a normal pass. The
+# forward-only flow leaves just three live tags — `evaluated` (resume
+# checkpoint), `job_post`, and `caddy_processed` (single terminal tag).
 STATE_QUERIES: dict[str, str] = {
     "unevaluated": "not tag:evaluated",
     "evaluated_not_job": "tag:evaluated and not tag:job_post",
-    "job_post_pending_refine": "tag:job_post and not tag:refined",
-    "refined_follow_up": "tag:follow_up and not tag:caddy_processed",
-    "refined_inline_post": "tag:inline_post and not tag:caddy_processed",
-    "refined_new_post": "tag:refined and not tag:follow_up and not tag:inline_post and not tag:caddy_processed",
+    "job_post_unprocessed": "tag:job_post and not tag:caddy_processed",
     "caddy_processed": "tag:caddy_processed",
 }
 
@@ -872,7 +837,7 @@ async def _run_loop(limit: int, backend: str | None, days_back: int, interval: i
 
 async def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run the three-stage email triage pipeline (caddy-inbox)."
+        description="Run the forward-path email triage pipeline (caddy-inbox)."
     )
     parser.add_argument("--loop", action="store_true", help="Run continuously.")
     parser.add_argument(

@@ -124,12 +124,21 @@ def record_email(
     *,
     exception_class: str | None = None,
     network_failure: bool = False,
+    introspection: dict[str, Any] | None = None,
     extra: dict[str, Any] | None = None,
 ) -> None:
     """Insert one ``triage_emails`` doc for a processed email.
 
     ``run_id`` may be ``None`` if ``start_run`` failed — we still write
     the row (with run_id=None) so partial-outage data is preserved.
+
+    ``introspection`` (AUTO-33) is an optional extraction-diagnostic
+    sub-document built by the triage loop around the body-load +
+    URL-extract calls (``body_chars`` / ``body_url_count`` /
+    ``body_nontext_only`` / ``extract_kept`` / ``extract_reasoning``). It
+    makes an outcome like ``new_no_urls`` self-explaining from Mongo — no
+    ad-hoc script needed. Persisted only when present; like every write
+    here it is fire-and-forget and never raises into the caller.
     """
     if run_id is None:
         # If we don't even have a run anchor, the write is informational
@@ -150,6 +159,8 @@ def record_email(
             "network_failure": network_failure,
             "processed_at": _now(),
         }
+        if introspection is not None:
+            doc["introspection"] = introspection
         if extra:
             doc.update(extra)
         db.triage_emails.insert_one(doc)

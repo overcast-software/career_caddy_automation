@@ -95,7 +95,7 @@ uv run --group dev pytest tests/<file>::<test>
 | `caddy-url <url>` | `src.pipelines.url_to_caddy:run` — scrape one URL → post |
 | `caddy-email` | `src.pipelines.email_to_caddy:run` — notmuch → scrape → post |
 | `caddy-classify` | `scripts.tag_emails:run` — classify/tag emails daemon (stage 1 only) |
-| `caddy-inbox` | `scripts.inbox_triage:run` — three-stage triage orchestrator (classify → refine → follow-up); see below |
+| `caddy-inbox` | `scripts.inbox_triage:run` — forward-path triage daemon (classify → extract-links / inline-fallback); see below |
 | `caddy-process` | `scripts.process_tagged:run` |
 | `caddy-orchestrator` | `src.agents.a2a_orchestrator:run` — A2A client/REPL (`--web` for UI) |
 | `caddy-gateway` | `mcp_servers.agents_gateway:main` — exposes sub-agents as MCP tools (default) or A2A services (`--mode a2a`) |
@@ -104,13 +104,33 @@ uv run --group dev pytest tests/<file>::<test>
 
 Most long-running pipelines support `--loop` and `--interval`.
 
-### `caddy-inbox` triage pipeline
+### `caddy-inbox` triage pipeline (forward-path)
 
-`caddy-inbox` sequences three agents per email — classify (job-related?
-yes/no), refine (new posting vs. follow-up correspondence), follow-up
-(find matching job_application + set status) — and applies the tags
-`evaluated`, `job_post`, `refined`, `follow_up`, `caddy_processed` in
-order. Agents live in `src/agents/email_agents.py`; the loop in
+`caddy-inbox` triages ONLY the emails Doug forwards to
+`forwarding@careercaddy.online` — the forward IS the "evaluate this"
+signal, so it's a *light pass*, not a classifier gauntlet. The notmuch
+selector is `to:"forwarding@careercaddy.online" AND NOT
+tag:caddy_processed` (override the recipient with `CADDY_INBOX_RECIPIENT`).
+Two deterministic paths per forward:
+
+1. **classify** — one cheap `gpt-4o-mini` "is this a job?" check. Tags
+   `evaluated` (a resume checkpoint) and `job_post` when it is; a non-job
+   gets `caddy_processed` and stops.
+2. **extract-links** — render the body (html-only forwards included, via
+   `src/email_source/{mime,html_render}.py`), `extract_job_urls`, and
+   create a JobPost per link. Tier-0/known-good links also get a `hold`
+   scrape carrying `job_post_id` so the runner AUGMENTS the just-created
+   post (never mints a second one).
+3. **inline-fallback** — when a forward has no link, pull a link-less
+   JobPost out of a JD pasted inline (`source="email_direct"`).
+
+Refine + follow-up handling are gone. `caddy_processed` is written on
+EVERY terminal path (so the `NOT tag:caddy_processed` selector never
+re-runs the LLMs on the backlog), and all tag reads/writes are
+MESSAGE-granular (`meta.id`) so a forward sharing a thread with an
+already-processed original is judged on its own state (AUTO-32). Per-email
+extraction diagnostics land in Mongo (`triage_emails.introspection`).
+Agents live in `src/agents/email_agents.py`; the loop in
 `scripts/inbox_triage.py`; the pluggable backend (`src/email_source/`,
 selected by `CADDY_EMAIL_BACKEND=notmuch|imap`) keeps classification
 agnostic of mail source. **Do not run `caddy-classify` / `caddy-process`

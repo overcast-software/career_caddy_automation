@@ -26,14 +26,11 @@ async def trace_one(email_id: str) -> int:
     from lib.trace_inbox import trace_email
     from scripts.inbox_triage import (
         _api_client,
-        _caddy_deps,
         _triage_one,
     )
     from src.agents.email_agents import (
         get_classify_agent,
-        get_followup_agent,
         get_inline_post_agent,
-        get_refine_agent,
     )
 
     source = NotmuchSource()
@@ -48,18 +45,14 @@ async def trace_one(email_id: str) -> int:
         meta = EmailMeta(id=email_id, subject="(unknown — not in pending list)", tags=set())
 
     api = _api_client()
-    deps = _caddy_deps()
 
     async with trace_email(meta.id, meta.subject, force=True) as t:
         outcome = await _triage_one(
             meta,
             source,
             get_classify_agent(),
-            get_refine_agent(),
-            get_followup_agent(),
             get_inline_post_agent(),
             api,
-            deps,
         )
         t.event("triage", "done", outcome=outcome)
         t.dump(outcome)

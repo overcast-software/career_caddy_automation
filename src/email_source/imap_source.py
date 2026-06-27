@@ -35,7 +35,7 @@ class ImapSource:
             "Set CADDY_EMAIL_BACKEND=notmuch for the inbox-triage daemon."
         )
 
-    async def add_tags(self, thread_id: str, tags: list[str]) -> None:
+    async def add_tags(self, message_id: str, tags: list[str]) -> None:
         raise NotImplementedError(
             "IMAP backend not yet implemented for inbox_triage. "
             "Set CADDY_EMAIL_BACKEND=notmuch for the inbox-triage daemon."
