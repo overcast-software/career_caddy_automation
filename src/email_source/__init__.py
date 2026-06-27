@@ -34,18 +34,25 @@ class EmailSource(Protocol):
     """
 
     async def list_pending(self, limit: int = 20, days_back: int = 14) -> list[EmailMeta]:
-        """Return emails that need some triage stage:
+        """Return the forwarded emails awaiting triage.
 
-        1. NOT tag:evaluated  → need stage-1 classify
-        2. tag:job_post AND NOT tag:refined  → need stage-2 refine
-        3. tag:follow_up AND NOT tag:caddy_processed  → need stage-3 processor
+        The forward-only workflow selects messages addressed to the forward
+        recipient (``forwarding@careercaddy.online``) that the triage loop
+        has not yet marked ``caddy_processed``. The orchestrator inspects
+        ``meta.tags`` to decide whether stage 1 (classify) still needs to
+        run or it can resume at extraction.
 
-        The orchestrator inspects ``meta.tags`` to pick which stage to run.
+        ``meta.tags`` MUST be the matched message's OWN tags, not the thread
+        union — a forward that shares a thread with an already-processed
+        original must not inherit its ``evaluated``/``caddy_processed``
+        markers (AUTO-32).
         """
         ...
 
-    async def add_tags(self, thread_id: str, tags: list[str]) -> None:
-        """Idempotent tag add. Safe to call with tags already present."""
+    async def add_tags(self, message_id: str, tags: list[str]) -> None:
+        """Idempotent tag add on a single MESSAGE by id. Safe to call with
+        tags already present. Must NOT tag thread siblings — tagging at
+        thread granularity poisons not-yet-processed forwards (AUTO-32)."""
         ...
 
     async def count_by_query(self, query: str, days_back: int = 14) -> int:

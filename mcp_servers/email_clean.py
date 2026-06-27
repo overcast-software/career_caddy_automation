@@ -10,9 +10,14 @@ from __future__ import annotations
 
 import re
 
-import html2text
-import logfire
-from bs4 import BeautifulSoup
+# ``html_to_markdown`` moved to ``src/email_source/html_render`` so the email
+# triage scripts can render bodies without importing this MCP module (and its
+# ``fastmcp``/``logfire`` weight). Re-exported here so ``email_server`` \u2014
+# which does ``from mcp_servers.email_clean import clean_markdown,
+# html_to_markdown`` \u2014 is unchanged.
+from src.email_source.html_render import html_to_markdown
+
+__all__ = ["clean_markdown", "html_to_markdown"]
 
 _ZW_CHARS = re.compile(r"[\u034f\u200b\u200c\u200d\u00ad\u2060\ufeff]")
 _TRIPLE_BLANK = re.compile(r"\n\s*\n\s*\n+")
@@ -47,25 +52,3 @@ def clean_markdown(md: str, classify: bool = False) -> str:
         md = _PIPE_ONLY.sub("", md)
     md = _TRIPLE_BLANK.sub("\n\n", md)
     return md.strip()
-
-
-def html_to_markdown(html: str) -> str:
-    """Convert raw HTML to markdown via BeautifulSoup + html2text.
-
-    Returns an empty string and logs on conversion failure so callers can
-    fall back to plain text without branching on exceptions.
-    """
-    h = html2text.HTML2Text()
-    h.ignore_links = False
-    h.ignore_images = False
-    h.body_width = 0
-    h.unicode_snob = True
-    h.ignore_emphasis = False
-    try:
-        soup = BeautifulSoup(html, "html.parser")
-        for tag in soup(["script", "style"]):
-            tag.decompose()
-        return h.handle(str(soup))
-    except Exception as exc:
-        logfire.warning(f"Error converting HTML to markdown: {exc}")
-        return ""

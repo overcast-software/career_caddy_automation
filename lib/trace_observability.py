@@ -8,8 +8,8 @@
 # queries useless — you can't `WHERE attributes->>'email_id' = X` because the
 # id is part of the span name, not an attribute.
 #
-# This decorator wraps `_run_classify` / `_run_refine` / `_run_followup` /
-# `_run_inline_post` to attach `email_id` (and a `stage` label) as REAL span
+# This decorator wraps `_run_classify` / `_run_inline_post` (and the
+# `extract_job_urls` call) to attach `email_id` (and a `stage` label) as REAL span
 # attributes on the outer span we open here. Inner provider spans still carry
 # the task-string in the name; the outer span gives logfire a queryable
 # pivot.
