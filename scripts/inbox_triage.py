@@ -35,9 +35,11 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 from dataclasses import dataclass, field
+from typing import Any
 from urllib.parse import urlsplit
 
 from src.agents.email_agents import (
@@ -87,10 +89,15 @@ class TriageOutcome:
     counter, but Phase A's Mongo writer also wants the per-email tags-added
     diff so it lands in ``triage_emails``. Keeping both fields on one
     dataclass keeps the call site readable.
+
+    ``introspection`` (AUTO-33) is the optional extraction-diagnostic
+    sub-document built in stage 5 (see ``_build_introspection``); ``None``
+    for emails that exit before stage 5 or when the build fails.
     """
 
     outcome: str
     tags_added: list[str] = field(default_factory=list)
+    introspection: dict[str, Any] | None = None
 
 
 def _caddy_deps() -> CareerCaddyDeps:
@@ -156,6 +163,59 @@ def _load_email_text(email_id: str) -> str:
     if result.returncode != 0:
         raise RuntimeError(f"notmuch show failed for {email_id}: {result.stderr.strip()}")
     return result.stdout
+
+
+# Matches http(s):// and mailto: URLs in the loaded body text. Ported from
+# /tmp/cc_introspect_extract.py — the negated class stops at whitespace and
+# the HTML delimiters that leak in from ``href="..."`` attributes so a count
+# isn't inflated by a trailing quote/bracket.
+_BODY_URL_RE = re.compile(r"""(?:https?://|mailto:)[^\s"'<>)\]]+""")
+
+# The literal placeholder ``notmuch show --format=text`` emits in place of a
+# body when the only part is ``text/html`` (e.g. a Thunderbird forward). Its
+# presence with zero URLs is the html-only signature that silently starves the
+# URL extractor and produces ``new_no_urls``.
+_NONTEXT_MARKER = "Non-text part:"
+
+
+def _count_body_urls(text: str) -> int:
+    """Count http(s)/mailto URLs in the loaded body text (regex, no network)."""
+    return len(_BODY_URL_RE.findall(text))
+
+
+def _build_introspection(body_text: str, extracted: Any) -> dict[str, Any] | None:
+    """Extraction-diagnostic sub-document for the per-email Mongo record (AUTO-33).
+
+    Bakes the exact signals that made ``new_no_urls`` invisible in Mongo into
+    the ``triage_emails`` doc so the outcome self-explains from a query:
+
+    * ``body_chars`` — length of the loaded body text (570 for an html-only
+      forward vs ~36k for a multipart original — the tell at a glance).
+    * ``body_url_count`` — raw http(s)/mailto URLs the body held.
+    * ``body_nontext_only`` — the html-only signature: body carries the
+      ``Non-text part:`` placeholder AND held zero URLs.
+    * ``extract_kept`` — how many URLs the stage-5 extractor kept.
+    * ``extract_reasoning`` — the extractor's "N kept, M dropped" line.
+
+    Pure observability — fully fail-safe. ANY error returns ``None`` so the
+    email's real outcome and Mongo record are never endangered. ``mime`` is
+    intentionally omitted: it would cost a second ``notmuch show`` subprocess,
+    and the ticket forbids extra notmuch calls just to populate it.
+    """
+    try:
+        url_count = _count_body_urls(body_text)
+        intro: dict[str, Any] = {
+            "body_chars": len(body_text),
+            "body_url_count": url_count,
+            "body_nontext_only": _NONTEXT_MARKER in body_text and url_count == 0,
+        }
+        if extracted is not None:
+            intro["extract_kept"] = len(extracted.job_urls)
+            intro["extract_reasoning"] = extracted.reasoning
+        return intro
+    except Exception:
+        logger.debug("introspection build failed for stage-5 email (non-fatal)", exc_info=True)
+        return None
 
 
 def _auto_scrape_known_good_enabled() -> bool:
@@ -469,9 +529,14 @@ async def _triage_one(
     initial_tags = set(meta.tags)
     tags: set[str] = set(initial_tags)
     final_outcome = "already_done"
+    introspection: dict[str, Any] | None = None
 
     def _result() -> TriageOutcome:
-        return TriageOutcome(outcome=final_outcome, tags_added=sorted(tags - initial_tags))
+        return TriageOutcome(
+            outcome=final_outcome,
+            tags_added=sorted(tags - initial_tags),
+            introspection=introspection,
+        )
 
     try:
         # Stage 1 — classify (only if not yet evaluated).
@@ -587,6 +652,11 @@ async def _triage_one(
                 final_outcome = "new_load_failed"
                 return _result()
             extracted = await extract_job_urls(text)
+            # AUTO-33: bake the body/URL/extract diagnostics into the per-email
+            # record so the stage-5 outcome (especially new_no_urls) explains
+            # itself from Mongo. Fail-safe: a build error yields None and never
+            # touches the real outcome.
+            introspection = _build_introspection(text, extracted)
             if not extracted.job_urls:
                 await source.add_tags(meta.thread_id, ["caddy_processed"])
                 tags.add("caddy_processed")
@@ -657,6 +727,7 @@ async def run_once(limit: int, backend: str | None, days_back: int) -> None:
         tags_added: list[str] = []
         exception_class: str | None = None
         network_failure = False
+        introspection: dict[str, Any] | None = None
         try:
             triage = await _triage_one(
                 meta,
@@ -671,6 +742,7 @@ async def run_once(limit: int, backend: str | None, days_back: int) -> None:
             )
             outcome_bucket = triage.outcome
             tags_added = triage.tags_added
+            introspection = triage.introspection
         except Exception as exc:
             logger.exception("Triage raised for %s: %s", meta.id, exc)
             outcome_bucket, network_failure = classify_exception(exc)
@@ -684,6 +756,7 @@ async def run_once(limit: int, backend: str | None, days_back: int) -> None:
                 tags_added,
                 exception_class=exception_class,
                 network_failure=network_failure,
+                introspection=introspection,
             )
         counters[outcome_bucket] = counters.get(outcome_bucket, 0) + 1
 
