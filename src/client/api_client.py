@@ -658,32 +658,21 @@ async def create_scrape(
     job_post_id: str | None = None,
     company_id: str | None = None,
     status: str | None = None,
-    attended: bool = False,
     auto_score: bool | None = None,
 ) -> str:
     """Create a scrape record.
-
-    ``attended=True`` marks the scrape so ONLY an attended runner
-    (``make runner ARGS="--attended"``, warm cookies/login) claims it via
-    the api's partitioned claim-next; default runners claim only
-    ``attended=False`` holds. Used to route known-good auto-scrapes to the
-    operator's attended session. The api reads the ``attended`` attribute
-    snake_case (it does not dasherize JSON:API attribute keys). When
-    ``False`` (the default) the attribute is omitted, so existing call
-    sites send a byte-identical payload.
 
     ``auto_score`` controls whether the api scores the post once the scrape
     lands. Left ``None`` (the default) the attribute is omitted, so the api
     keeps its own default (score on) and existing call sites send a
     byte-identical payload. Pass ``False`` for free-tier enrichment that must
     never spend scoring tokens (AUTO-29 known-good auto-enrichment). The api
-    reads ``auto_score`` snake_case alongside ``attended``.
+    reads ``auto_score`` snake_case (it does not dasherize JSON:API attribute
+    keys).
     """
     attributes: dict = {"url": url}
     if status:
         attributes["status"] = status
-    if attended:
-        attributes["attended"] = True
     if auto_score is not None:
         attributes["auto_score"] = auto_score
     relationships = {}

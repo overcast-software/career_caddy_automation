@@ -1,11 +1,11 @@
 [Unit]
-Description=Career Caddy scrape runner (Camoufox, attended) on pibu
+Description=Career Caddy scrape runner (Camoufox, headed) on pibu
 Documentation=file:%h/Projects/career_caddy_automation/deploy/pibu/README.md
 After=graphical-session.target network-online.target
 Wants=network-online.target
 PartOf=graphical-session.target
 
-# The runner needs an X/Wayland display because Camoufox runs attended
+# The runner needs an X/Wayland display because Camoufox runs headed
 # (one resident window, ephemeral tabs per scrape). On pibu, wayvnc
 # provides the display via Xwayland on :0.
 ConditionPathExists=%h/.Xauthority
@@ -18,7 +18,7 @@ Environment=DISPLAY=:0
 Environment=XAUTHORITY=%h/.Xauthority
 
 WorkingDirectory=%h/Projects/career_caddy_agents
-ExecStart=%h/.local/bin/uv run python -m runners.scrape_runner --engine camoufox --attended
+ExecStart=%h/.local/bin/uv run python -m runners.scrape_runner --engine camoufox --headed
 
 # Camoufox/Firefox keeps the resident window open for the lifetime of
 # the runner; SIGTERM closes it cleanly. Give it room to drain an
