@@ -10,7 +10,7 @@ one box) — even though the runner *code* lives in the sibling
 
 Pibu's RAM budget is too tight to launch headed Chromium under
 Playwright (`BrowserType.launch: Timeout 180000ms exceeded` in a prior
-session). Camoufox's Firefox engine fits, and `--attended` mode keeps
+session). Camoufox's Firefox engine fits, and `--headed` mode keeps
 one resident window with ephemeral tabs per scrape so cookies persist
 across scrapes — exactly what Doug wants to watch over VNC.
 
@@ -18,7 +18,7 @@ across scrapes — exactly what Doug wants to watch over VNC.
 
 - `caddy-runner.service` — systemd **user** unit. Sources the env file,
   exports `DISPLAY=:0`, runs the agents-repo runner with
-  `--engine camoufox --attended`. Memory-capped (`MemoryHigh=600M`,
+  `--engine camoufox --headed`. Memory-capped (`MemoryHigh=600M`,
   `MemoryMax=750M`).
 - `install.sh` — idempotent installer. Preflight-checks the env file,
   agents repo, and `uv`, then drops the unit into
@@ -35,7 +35,7 @@ CC_RUNNER_NAME=pibu
 BROWSER_ENGINE=camoufox
 ```
 
-Do **not** set `BROWSER_HEADLESS=true` — `--attended` requires a display.
+Do **not** set `BROWSER_HEADLESS=true` — `--headed` requires a display.
 
 ## One-time setup on pibu
 
@@ -100,7 +100,7 @@ systemctl --user restart caddy-runner
 - Pibu has 905 MB RAM total; the unit caps at 750 MB. A Camoufox
   process that drifts above that gets killed and systemd restarts
   (with `RestartSec=30`). If this happens frequently, drop
-  `--attended` and run headless (one ephemeral browser per scrape,
+  `--headed` and run headless (one ephemeral browser per scrape,
   lower steady-state RAM but no warm cookies).
 - No swap headroom — pibu already runs close to the limit. Don't
   run other heavy workloads alongside the runner.
