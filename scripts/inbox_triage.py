@@ -59,6 +59,7 @@ from src.agents.email_agents import (
     get_classify_agent,
     get_inline_post_agent,
 )
+from src.agents.span_validator import filter_span_atomic
 from src.agents.url_extractor import extract_job_urls
 from src.client.api_client import (
     ApiClient,
@@ -526,6 +527,22 @@ async def _triage_one(
             final_outcome = "load_failed"
             return _result()
         extracted = await extract_job_urls(text)
+        # CC-111: deterministic cross-row guard. On multi-job digests
+        # (ZipRecruiter /km/ trackers, LinkedIn /jobs/view/ ids) the LLM
+        # extractor occasionally pairs one row's apply link with another
+        # row's title/company. filter_span_atomic re-anchors each JobLink
+        # against the body and drops any whose URL doesn't co-occur with its
+        # title/company in the same row (mirrors process_tagged.py). Runs
+        # BEFORE _build_introspection so the Mongo record reflects what was
+        # kept, not what the LLM first emitted.
+        before_span = len(extracted.job_urls)
+        extracted.job_urls = filter_span_atomic(extracted.job_urls, text, email_id=email_id)
+        if len(extracted.job_urls) != before_span:
+            logger.info(
+                "  span_validator dropped %d/%d url(s) (cross-row hallucination guard)",
+                before_span - len(extracted.job_urls),
+                before_span,
+            )
         # AUTO-33: bake the body/URL/extract diagnostics into the per-email
         # record so the outcome (especially new_no_urls) explains itself from
         # Mongo. Fail-safe: a build error yields None and never touches the

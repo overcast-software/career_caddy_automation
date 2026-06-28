@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -305,3 +306,77 @@ def test_already_evaluated_skips_classify(monkeypatch):
         )
     )
     assert outcome.outcome == "new_created"
+
+
+# ---------------------------------------------------------------------------
+# CC-111 — Stage-E runs the span_validator cross-row guard before posting.
+# The deterministic guard lived in process_tagged.py but was MISSING from the
+# forward-path Stage-E, so multi-job digests created JobPosts pairing a
+# title/company with the WRONG job's apply link. Mirrors
+# tests/test_span_validator.py::test_drops_cross_row_link at the triage level.
+# ---------------------------------------------------------------------------
+
+FIXTURES = Path(__file__).parent / "fixtures" / "emails"
+ZIP_SNBL_URL = "https://www.ziprecruiter.com/km/AAGjSNBL-tracker-token-001"
+ZIP_FSD_URL = "https://www.ziprecruiter.com/km/BBHkFSDeveloper-token-002"
+
+
+def test_stage_e_drops_cross_row_mispair_before_posting(monkeypatch):
+    """A ZipRecruiter digest where the LLM mis-paired row-1's apply link with
+    row-2's title/company. Stage-E must run the REAL filter_span_atomic so the
+    mis-paired triple never reaches _create_posts_from_urls, while the two
+    coherent same-row links survive (CC-111 regression)."""
+    body = (FIXTURES / "ziprecruiter_km_tracker.txt").read_text()
+    monkeypatch.setattr(it, "_load_email_text", lambda _id: body)
+
+    good_snbl = _Link(
+        url=ZIP_SNBL_URL,
+        title="SNBL Bilingual Business Development Manager",
+        company="SNBL USA",
+    )
+    good_fsd = _Link(
+        url=ZIP_FSD_URL,
+        title="Junior to Mid Level Full Stack Developer",
+        company="Web Connectivity LLC",
+    )
+    # The hallucination: row-1's apply link (SNBL) carrying row-2's
+    # title/company (Full Stack Developer @ Web Connectivity LLC).
+    bad_cross_row = _Link(
+        url=ZIP_SNBL_URL,
+        title="Junior to Mid Level Full Stack Developer",
+        company="Web Connectivity LLC",
+    )
+    monkeypatch.setattr(
+        it,
+        "extract_job_urls",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                job_urls=[good_snbl, bad_cross_row, good_fsd],
+                reasoning="3 kept",
+            )
+        ),
+    )
+    # Spy on the creator — the REAL filter_span_atomic runs upstream of it.
+    create_spy = AsyncMock(
+        return_value={
+            "created": [ZIP_SNBL_URL, ZIP_FSD_URL],
+            "duplicates": [],
+            "failed": [],
+            "scrapes_queued": 0,
+        }
+    )
+    monkeypatch.setattr(it, "_create_posts_from_urls", create_spy)
+
+    src = _solo()
+    outcome = _run(src.meta("fwd@dougheadley.com"), src)
+
+    assert outcome.outcome == "new_created"
+    # Only the coherent same-row links reached _create_posts_from_urls; the
+    # cross-row mis-pair was dropped before any JobPost create.
+    create_spy.assert_awaited_once()
+    passed_links = create_spy.await_args.args[1]
+    assert [link.url for link in passed_links] == [ZIP_SNBL_URL, ZIP_FSD_URL]
+    assert [link.title for link in passed_links] == [
+        "SNBL Bilingual Business Development Manager",
+        "Junior to Mid Level Full Stack Developer",
+    ]
