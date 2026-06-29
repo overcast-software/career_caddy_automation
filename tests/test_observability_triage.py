@@ -238,3 +238,71 @@ def test_db_name_from_uri():
     assert _db_name_from_uri("mongodb://localhost:27017/") == "cc_auto"
     assert _db_name_from_uri("mongodb://localhost:27017") == "cc_auto"
     assert _db_name_from_uri("mongodb://h:27017/other_db") == "other_db"
+
+
+class TestObservabilityOptOut:
+    """``CADDY_OBSERVABILITY`` opt-out — AUTO-27.
+
+    An off-value must short-circuit ``get_db()`` to ``None`` *before* pymongo
+    is touched, so no connection is attempted (no 2s timeout, no warning).
+    Unset / any other value keeps today's connect-and-index behaviour.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
+        from src.observability import mongo_client
+
+        mongo_client.reset_cache()
+        yield
+        mongo_client.reset_cache()
+
+    @pytest.mark.parametrize(
+        "value",
+        ["0", "false", "no", "off", "OFF", "  Off  ", "False", "NO"],
+    )
+    def test_off_value_returns_none_without_connecting(self, monkeypatch, value):
+        from unittest.mock import MagicMock
+
+        from src.observability import mongo_client
+
+        client_factory = MagicMock(name="MongoClient")
+        monkeypatch.setattr("pymongo.MongoClient", client_factory)
+        monkeypatch.setenv("CADDY_OBSERVABILITY", value)
+
+        assert mongo_client.get_db() is None
+        # The whole point: pymongo is never constructed for off-values.
+        client_factory.assert_not_called()
+
+    def test_unset_builds_the_handle(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from src.observability import mongo_client
+
+        fake_db = MagicMock(name="database")
+        client_instance = MagicMock(name="client")
+        client_instance.__getitem__.return_value = fake_db
+        client_factory = MagicMock(name="MongoClient", return_value=client_instance)
+        monkeypatch.setattr("pymongo.MongoClient", client_factory)
+        monkeypatch.delenv("CADDY_OBSERVABILITY", raising=False)
+
+        db = mongo_client.get_db()
+        assert db is fake_db
+        client_factory.assert_called_once()
+        # Indexes still declared on the returned handle.
+        assert fake_db.triage_emails.create_index.called
+
+    @pytest.mark.parametrize("value", ["on", "1", "yes", "true", "enabled", ""])
+    def test_non_off_value_builds_the_handle(self, monkeypatch, value):
+        from unittest.mock import MagicMock
+
+        from src.observability import mongo_client
+
+        fake_db = MagicMock(name="database")
+        client_instance = MagicMock(name="client")
+        client_instance.__getitem__.return_value = fake_db
+        client_factory = MagicMock(name="MongoClient", return_value=client_instance)
+        monkeypatch.setattr("pymongo.MongoClient", client_factory)
+        monkeypatch.setenv("CADDY_OBSERVABILITY", value)
+
+        assert mongo_client.get_db() is fake_db
+        client_factory.assert_called_once()
