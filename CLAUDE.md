@@ -121,7 +121,7 @@ bare `forwarding@` drop, or an over-captured personal-alias original with no
 `caddy_no_user`, no LLM call, no JobPost (outcome `no_user`). A resolver error
 (api/network down) leaves the message unprocessed for a retry. Past the gate
 it's a *light pass*, not a classifier gauntlet, and each created JobPost is
-attributed to the owning user (`created_by_id`). Two deterministic paths per
+attributed to the owning user (`owner_user_id`). Two deterministic paths per
 message:
 
 1. **classify** — one cheap `gpt-4o-mini` "is this a job?" check. Tags

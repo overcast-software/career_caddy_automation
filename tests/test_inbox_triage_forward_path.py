@@ -495,7 +495,7 @@ def test_resolver_error_leaves_message_unprocessed(monkeypatch):
 
 
 def test_created_post_attributed_to_owner(monkeypatch):
-    """A resolved owner threads created_by_id onto the JobPost create (real
+    """A resolved owner threads owner_user_id onto the JobPost create (real
     _create_posts_from_urls; only the HTTP create + enrichment stubbed)."""
     monkeypatch.setattr(it, "_load_email_text", lambda _id: "body with a job link")
     monkeypatch.setattr(
@@ -520,7 +520,7 @@ def test_created_post_attributed_to_owner(monkeypatch):
 
     assert outcome.outcome == "new_created"
     create_mock.assert_awaited_once()
-    assert create_mock.await_args.kwargs["created_by_id"] == DEFAULT_OWNER_ID
+    assert create_mock.await_args.kwargs["owner_user_id"] == DEFAULT_OWNER_ID
 
 
 # ---------------------------------------------------------------------------

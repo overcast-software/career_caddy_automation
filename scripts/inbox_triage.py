@@ -15,7 +15,7 @@ gate runs FIRST per message (AUTO-18 M1):
                            leaves the message unprocessed for a retry.
 
 Past the gate the light pass is two deterministic paths, and every JobPost it
-creates is attributed to the owning user (``created_by_id``):
+creates is attributed to the owning user (``owner_user_id``):
 
     stage 1 (classify)  →  one cheap "is this a job?" check; tag `evaluated`
                            (a resume checkpoint) and `job_post` when it is.
@@ -301,7 +301,7 @@ async def _create_posts_from_urls(
 
     ``owner_user_id`` (AUTO-18 M1), when set, attributes every created post to
     the CC user the catchall forward was addressed to (threaded to the api as
-    ``created_by_id``); ``None`` (the default for other callers and tests)
+    ``owner_user_id``); ``None`` (the default for other callers and tests)
     sends the legacy unattributed payload.
 
     ``auto_scrape_known_good`` gates free-tier auto-enrichment (AUTO-29):
@@ -343,7 +343,7 @@ async def _create_posts_from_urls(
                     link=link.url,
                     description=desc,
                     source="email",
-                    created_by_id=owner_user_id,
+                    owner_user_id=owner_user_id,
                 )
             else:
                 raw = await create_job_post_minimal(
@@ -351,7 +351,7 @@ async def _create_posts_from_urls(
                     title=link.title,
                     link=link.url,
                     description=desc,
-                    created_by_id=owner_user_id,
+                    owner_user_id=owner_user_id,
                 )
         except Exception as exc:
             logger.warning("  job-post raised for %s: %s", link.url, exc)
@@ -438,7 +438,7 @@ async def _create_inline_job_post(
     or None on failure. link is null; source is "email_direct".
 
     ``owner_user_id`` (AUTO-18 M1), when set, attributes the post to the CC
-    user the catchall forward was addressed to (threaded as ``created_by_id``);
+    user the catchall forward was addressed to (threaded as ``owner_user_id``);
     ``None`` keeps the legacy unattributed payload."""
     description = res.description
     if res.recruiter_contact:
@@ -455,7 +455,7 @@ async def _create_inline_job_post(
                 salary_max=res.salary_max,
                 remote_ok=res.remote_ok,
                 source="email_direct",
-                created_by_id=owner_user_id,
+                owner_user_id=owner_user_id,
             )
         else:
             raw = await create_job_post_minimal(
@@ -463,7 +463,7 @@ async def _create_inline_job_post(
                 title=res.title,
                 description=description,
                 source="email_direct",
-                created_by_id=owner_user_id,
+                owner_user_id=owner_user_id,
             )
         resp = json.loads(raw)
     except Exception as exc:
@@ -555,7 +555,7 @@ async def _triage_one(
     propagates so the message stays unprocessed and retries next cycle.
 
     Past the gate, two paths only — see the module docstring. Each created
-    JobPost is attributed to the owning user via ``created_by_id``. All tag
+    JobPost is attributed to the owning user via ``owner_user_id``. All tag
     reads/writes are MESSAGE-granular (``meta.id``), never thread (AUTO-32),
     and ``caddy_processed`` is written on EVERY terminal path so the
     ``NOT tag:caddy_processed`` selector never re-runs the LLMs on the

@@ -263,7 +263,7 @@ async def create_job_post_minimal(
     link: str | None = None,
     description: str | None = None,
     source: str = "email",
-    created_by_id: int | None = None,
+    owner_user_id: int | None = None,
 ) -> str:
     """Create a job post with no company relationship.
 
@@ -277,7 +277,7 @@ async def create_job_post_minimal(
     by provenance later. Defaults to "email" because this helper is the
     email-ingest path.
 
-    `created_by_id`, when set, attributes the post to the CC user the
+    `owner_user_id`, when set, attributes the post to the CC user the
     catchall forward was addressed to (AUTO-18 M1 per-user ownership);
     omitted when None so existing callers send a byte-identical payload.
     """
@@ -286,8 +286,8 @@ async def create_job_post_minimal(
         attrs["description"] = description
     if source in _EMAIL_TIER_SOURCES:
         attrs["complete"] = False
-    if created_by_id is not None:
-        attrs["created_by_id"] = created_by_id
+    if owner_user_id is not None:
+        attrs["owner_user_id"] = owner_user_id
     payload = {"data": {"type": "job-post", "attributes": attrs}}
     return await api.post("/api/v1/job-posts/", payload)
 
@@ -316,7 +316,7 @@ async def create_job_post_with_company_check(
     company_size: str | None = None,
     company_location: str | None = None,
     source: str = "chat",
-    created_by_id: int | None = None,
+    owner_user_id: int | None = None,
 ) -> str:
     """Create a job post, creating the company first if it doesn't exist.
 
@@ -324,7 +324,7 @@ async def create_job_post_with_company_check(
     email-ingest pipeline; rides through to JobPost.source and the
     JobPostDiscovery row the API auto-creates for the caller.
 
-    `created_by_id`, when set, attributes the post to the CC user the
+    `owner_user_id`, when set, attributes the post to the CC user the
     catchall forward was addressed to (AUTO-18 M1 per-user ownership);
     omitted when None so existing callers send a byte-identical payload.
     """
@@ -408,8 +408,8 @@ async def create_job_post_with_company_check(
         attributes["source"] = source
         if source in _EMAIL_TIER_SOURCES:
             attributes["complete"] = False
-        if created_by_id is not None:
-            attributes["created_by_id"] = created_by_id
+        if owner_user_id is not None:
+            attributes["owner_user_id"] = owner_user_id
         payload = {
             "data": {
                 "type": "job-post",
