@@ -18,12 +18,20 @@ from typing import Protocol
 
 @dataclass
 class EmailMeta:
-    """Minimal metadata the orchestrator uses to make routing decisions."""
+    """Minimal metadata the orchestrator uses to make routing decisions.
+
+    ``recipient`` is the ``@careercaddy.online`` localpart the message was
+    addressed to (e.g. ``"dough"``) — the owner-resolution key for the
+    catchall hard gate (AUTO-18 M1). ``None`` when the message carries no
+    ``@careercaddy.online`` recipient (an over-captured personal-alias
+    original), which the triage loop drops without an LLM call.
+    """
 
     id: str
     subject: str
     tags: set[str] = field(default_factory=set)
     thread_id: str = ""
+    recipient: str | None = None
 
 
 class EmailSource(Protocol):
@@ -34,13 +42,16 @@ class EmailSource(Protocol):
     """
 
     async def list_pending(self, limit: int = 20, days_back: int = 14) -> list[EmailMeta]:
-        """Return the forwarded emails awaiting triage.
+        """Return the catchall-maildir emails awaiting triage.
 
-        The forward-only workflow selects messages addressed to the forward
-        recipient (``forwarding@careercaddy.online``) that the triage loop
-        has not yet marked ``caddy_processed``. The orchestrator inspects
-        ``meta.tags`` to decide whether stage 1 (classify) still needs to
-        run or it can resume at extraction.
+        The catchall workflow (AUTO-18 M1) sweeps the whole per-user catchall
+        maildir folder (``path:`` selector, every ``<username>@careercaddy.online``
+        message) that the triage loop has not yet marked ``caddy_processed``.
+        Each ``EmailMeta`` carries the ``@careercaddy.online`` ``recipient``
+        localpart so the triage loop can resolve the owning user before
+        spending any LLM call. The orchestrator inspects ``meta.tags`` to
+        decide whether stage 1 (classify) still needs to run or it can resume
+        at extraction.
 
         ``meta.tags`` MUST be the matched message's OWN tags, not the thread
         union — a forward that shares a thread with an already-processed
