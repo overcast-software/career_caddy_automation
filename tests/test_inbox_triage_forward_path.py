@@ -26,11 +26,27 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
 import scripts.inbox_triage as it
 from src.email_source import EmailMeta
 
 POST_ID = "V30p4hHABQ"  # NanoID-shaped — a numeric string would mask an int()-cast regression.
 JOB_URL = "https://acme.com/jobs/frontend-engineer"
+DEFAULT_OWNER_ID = 7  # the recipient localpart resolves to this CC user by default.
+
+
+def _resolving_api(owner_id: int = DEFAULT_OWNER_ID) -> AsyncMock:
+    """An ApiClient stand-in whose users filter resolves any localpart to one
+    CC user — so the AUTO-18 M1 owner gate lets the message through to the
+    light pass. Create/enrichment calls are stubbed separately per test."""
+    api = AsyncMock()
+    api.get = AsyncMock(
+        return_value=json.dumps(
+            {"success": True, "data": {"data": [{"id": str(owner_id), "type": "user"}]}}
+        )
+    )
+    return api
 
 
 @dataclass
@@ -81,7 +97,11 @@ class FakeMessageSource:
     def meta(self, message_id: str) -> EmailMeta:
         m = self.messages[message_id]
         return EmailMeta(
-            id=message_id, subject=m["subject"], tags=set(m["tags"]), thread_id=m["thread"]
+            id=message_id,
+            subject=m["subject"],
+            tags=set(m["tags"]),
+            thread_id=m["thread"],
+            recipient=m.get("recipient", "dough"),
         )
 
     async def add_tags(self, message_id: str, tags: list[str]) -> None:
@@ -91,13 +111,14 @@ class FakeMessageSource:
         self.messages[message_id]["tags"].update(tags)
 
 
-def _solo(tags: set[str] | None = None) -> FakeMessageSource:
+def _solo(tags: set[str] | None = None, recipient: str | None = "dough") -> FakeMessageSource:
     return FakeMessageSource(
         {
             "fwd@dougheadley.com": {
                 "thread": "Tsolo",
                 "subject": "Fwd: New role",
                 "tags": tags if tags is not None else {"inbox"},
+                "recipient": recipient,
             }
         }
     )
@@ -107,7 +128,7 @@ def _run(meta, source, *, classify="job_post", inline=None, api=None):
     classify_agent = _Agent(classify)
     inline_agent = _Agent(inline if inline is not None else _thin_inline())
     return asyncio.run(
-        it._triage_one(meta, source, classify_agent, inline_agent, api or AsyncMock())
+        it._triage_one(meta, source, classify_agent, inline_agent, api or _resolving_api())
     )
 
 
@@ -302,7 +323,11 @@ def test_already_evaluated_skips_classify(monkeypatch):
 
     outcome = asyncio.run(
         it._triage_one(
-            src.meta("fwd@dougheadley.com"), src, _BoomAgent(), _Agent(_thin_inline()), AsyncMock()
+            src.meta("fwd@dougheadley.com"),
+            src,
+            _BoomAgent(),
+            _Agent(_thin_inline()),
+            _resolving_api(),
         )
     )
     assert outcome.outcome == "new_created"
@@ -380,3 +405,148 @@ def test_stage_e_drops_cross_row_mispair_before_posting(monkeypatch):
         "SNBL Bilingual Business Development Manager",
         "Junior to Mid Level Full Stack Developer",
     ]
+
+
+# ---------------------------------------------------------------------------
+# AUTO-18 M1 — owner gate. Each catchall message is owned by the
+# <username>@careercaddy.online user it was addressed to; a recipient that
+# doesn't resolve to a CC user is dropped BEFORE any LLM call.
+# ---------------------------------------------------------------------------
+
+
+class _BoomClassify:
+    async def run(self, *a, **k):
+        raise AssertionError("classify must not run — the owner gate runs first")
+
+
+def test_unknown_recipient_drops_no_user(monkeypatch):
+    """A recipient that resolves to NO CC user is catchall spam: drop cheaply
+    — tag caddy_processed + caddy_no_user, outcome no_user, and NEVER classify,
+    extract, or create."""
+    src = _solo(recipient="nobody")
+    # users filter returns an empty list → definitive no-user verdict.
+    api = AsyncMock()
+    api.get = AsyncMock(return_value=json.dumps({"success": True, "data": {"data": []}}))
+    monkeypatch.setattr(
+        it, "extract_job_urls", AsyncMock(side_effect=AssertionError("extract must not run"))
+    )
+    posts = AsyncMock()
+    monkeypatch.setattr(it, "_create_posts_from_urls", posts)
+
+    outcome = asyncio.run(
+        it._triage_one(
+            src.meta("fwd@dougheadley.com"), src, _BoomClassify(), _Agent(_thin_inline()), api
+        )
+    )
+
+    assert outcome.outcome == "no_user"
+    tags = src.messages["fwd@dougheadley.com"]["tags"]
+    assert {"caddy_processed", "caddy_no_user"} <= tags
+    assert "evaluated" not in tags and "job_post" not in tags
+    posts.assert_not_awaited()
+    assert sorted(outcome.tags_added) == ["caddy_no_user", "caddy_processed"]
+
+
+def test_recipient_none_drops_no_user(monkeypatch):
+    """A message with no @careercaddy.online recipient (an over-captured
+    personal-alias original) drops as no_user without even hitting the
+    resolver."""
+    src = _solo(recipient=None)
+    api = AsyncMock()
+    api.get = AsyncMock(side_effect=AssertionError("resolver must not run when recipient is None"))
+    monkeypatch.setattr(
+        it, "extract_job_urls", AsyncMock(side_effect=AssertionError("extract must not run"))
+    )
+
+    outcome = asyncio.run(
+        it._triage_one(
+            src.meta("fwd@dougheadley.com"), src, _BoomClassify(), _Agent(_thin_inline()), api
+        )
+    )
+
+    assert outcome.outcome == "no_user"
+    assert {"caddy_processed", "caddy_no_user"} <= src.messages["fwd@dougheadley.com"]["tags"]
+    api.get.assert_not_awaited()
+
+
+def test_resolver_error_leaves_message_unprocessed(monkeypatch):
+    """A resolver ERROR (api down / 5xx) is NOT a no-user verdict: it
+    propagates so the message stays UNprocessed (no tag, no create) and
+    retries next cycle — never silently lose a real forward."""
+    src = _solo()
+    api = AsyncMock()
+    api.get = AsyncMock(
+        return_value=json.dumps({"success": False, "error": "503 - upstream down"})
+    )
+    posts = AsyncMock()
+    monkeypatch.setattr(it, "_create_posts_from_urls", posts)
+
+    with pytest.raises(it.OwnerResolveError):
+        asyncio.run(
+            it._triage_one(
+                src.meta("fwd@dougheadley.com"), src, _Agent("job_post"), _Agent(_thin_inline()), api
+            )
+        )
+
+    tags = src.messages["fwd@dougheadley.com"]["tags"]
+    assert "caddy_processed" not in tags
+    assert "caddy_no_user" not in tags
+    posts.assert_not_awaited()
+
+
+def test_created_post_attributed_to_owner(monkeypatch):
+    """A resolved owner threads owner_user_id onto the JobPost create (real
+    _create_posts_from_urls; only the HTTP create + enrichment stubbed)."""
+    monkeypatch.setattr(it, "_load_email_text", lambda _id: "body with a job link")
+    monkeypatch.setattr(
+        it,
+        "extract_job_urls",
+        AsyncMock(return_value=SimpleNamespace(job_urls=[_Link(url=JOB_URL)], reasoning="1 kept")),
+    )
+    create_mock = AsyncMock(
+        return_value=json.dumps(
+            {
+                "success": True,
+                "status_code": 201,
+                "data": {"data": {"id": POST_ID, "attributes": {"canonical_link": JOB_URL}}},
+            }
+        )
+    )
+    monkeypatch.setattr(it, "create_job_post_minimal", create_mock)
+    monkeypatch.setattr(it, "_enrich_known_good", AsyncMock(return_value="skip"))
+
+    src = _solo()  # recipient "dough" → DEFAULT_OWNER_ID
+    outcome = _run(src.meta("fwd@dougheadley.com"), src)
+
+    assert outcome.outcome == "new_created"
+    create_mock.assert_awaited_once()
+    assert create_mock.await_args.kwargs["owner_user_id"] == DEFAULT_OWNER_ID
+
+
+# ---------------------------------------------------------------------------
+# _resolve_owner — the localpart→user-id resolver in isolation.
+# ---------------------------------------------------------------------------
+
+
+class TestResolveOwner:
+    def test_match_returns_int_id(self):
+        assert asyncio.run(it._resolve_owner(_resolving_api(owner_id=7), "dough")) == 7
+
+    def test_unknown_returns_none_not_raise(self):
+        api = AsyncMock()
+        api.get = AsyncMock(return_value=json.dumps({"success": True, "data": {"data": []}}))
+        assert asyncio.run(it._resolve_owner(api, "ghost")) is None
+
+    def test_api_error_envelope_raises(self):
+        api = AsyncMock()
+        api.get = AsyncMock(return_value=json.dumps({"success": False, "error": "500 - boom"}))
+        with pytest.raises(it.OwnerResolveError):
+            asyncio.run(it._resolve_owner(api, "dough"))
+
+    def test_unreadable_id_raises(self):
+        api = AsyncMock()
+        api.get = AsyncMock(
+            return_value=json.dumps({"success": True, "data": {"data": [{"type": "user"}]}})
+        )
+        with pytest.raises(it.OwnerResolveError):
+            asyncio.run(it._resolve_owner(api, "dough"))

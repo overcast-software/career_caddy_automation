@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from email.header import decode_header
 
 from src.email_source import EmailMeta
+from src.email_source.mime import extract_recipient
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,30 @@ def _message_tags(message_id: str) -> set[str]:
     if result.returncode != 0:
         raise RuntimeError(f"notmuch search tags failed: {result.stderr.strip()}")
     return {t.strip() for t in (result.stdout or "").splitlines() if t.strip()}
+
+
+def _message_recipient(message_id: str) -> str | None:
+    """Return the ``@careercaddy.online`` recipient localpart of one message.
+
+    Pulls the raw message (same per-message pattern as ``_message_tags``) and
+    runs ``extract_recipient`` over its headers. ``None`` on any failure or
+    when the message carries no ``@careercaddy.online`` recipient — the catchall
+    hard gate treats that as "no owner" and drops the message before any LLM
+    call (AUTO-18 M1). Best-effort: a notmuch error must not abort listing.
+    """
+    try:
+        result = subprocess.run(
+            ["notmuch", "show", "--format=raw", f"id:{message_id}"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except Exception:
+        logger.debug("recipient read failed for %s (non-fatal)", message_id, exc_info=True)
+        return None
+    if result.returncode != 0:
+        return None
+    return extract_recipient(result.stdout or "")
 
 
 def _matched_message_id(thread: dict) -> str | None:
@@ -88,22 +113,35 @@ def _thread_to_meta(thread: dict) -> EmailMeta | None:
         subject=_decode_subject(thread.get("subject") or ""),
         tags=_message_tags(raw_id),
         thread_id=thread.get("thread", ""),
+        recipient=_message_recipient(raw_id),
     )
 
 
-# Forward-only selector. Doug triages in Thunderbird and forwards the keepers
-# to ``forwarding@careercaddy.online`` — the forward IS the "evaluate this"
-# signal, so we no longer sweep the whole inbox by tag. Match by the To header
-# (``to:``): validated live, ``to:`` matches the forwards while a
-# ``folder:forwarding@…`` selector matches 0 here. ``caddy_processed`` is the
-# single terminal tag the triage loop writes on every exit path, so
+# Catchall-maildir selector (AUTO-18 M1). The per-user catchall delivers every
+# ``<username>@careercaddy.online`` message into one maildir folder, so we sweep
+# the WHOLE folder by ``path:`` and let the triage loop's hard gate decide
+# ownership per message (the recipient localpart must resolve to a CC user).
+#
+# Why path:, not to: — validated live against the maildir: a
+# ``to:"forwarding@careercaddy.online"`` selector matches only ~194 messages
+# (the handful Doug forwarded to that bare address) and STARVES the real
+# per-user catchall, while ``path:forwarding@careercaddy.online/Inbox/**``
+# matches the full folder (~2.6k) — so ``dough@``/``wisevehicle@`` mail is now
+# captured. The folder over-captures original job-board alerts delivered to the
+# operator's personal aliases (``doug@passiveobserver.com`` etc.); those carry
+# no ``@careercaddy.online`` recipient, so the ``_triage_one`` no-user gate
+# drops them cheaply before any LLM call. ``caddy_processed`` is the single
+# terminal tag the triage loop writes on every exit path, so
 # ``NOT tag:caddy_processed`` is the real pending working set.
 #
-# Future server-side catchall: if delivery lands forwards in a dedicated
-# maildir, a ``path:forwarding@…/Inbox/**`` selector becomes viable (it
-# over-captures delivered originals lacking the To header today).
-_FORWARD_RECIPIENT = os.environ.get("CADDY_INBOX_RECIPIENT", "forwarding@careercaddy.online")
-_PENDING_QUERY = f'to:"{_FORWARD_RECIPIENT}" AND NOT tag:caddy_processed'
+# Folder is the maildir-relative path under the notmuch database root; override
+# with ``CADDY_INBOX_NOTMUCH_FOLDER``. The ``path:`` term is passed as ONE
+# notmuch argv element (no shell), so the ``@`` and ``**`` glob are taken
+# literally by notmuch, never the shell.
+_CATCHALL_FOLDER = os.environ.get(
+    "CADDY_INBOX_NOTMUCH_FOLDER", "forwarding@careercaddy.online/Inbox"
+)
+_PENDING_QUERY = f"path:{_CATCHALL_FOLDER}/** AND NOT tag:caddy_processed"
 
 
 class NotmuchSource:

@@ -1,5 +1,4 @@
-"""AUTO-32 — notmuch source must be MESSAGE-granular, not thread-granular,
-and the forward-only selector targets the forward recipient.
+"""AUTO-32 message-granularity + AUTO-18 M1 catchall path: selector.
 
 When Doug forwards a ZipRecruiter-style alert, his forward lands in the
 *same notmuch thread* as the original alert. The pre-AUTO-32 source judged
@@ -12,9 +11,11 @@ and tagged at **thread** granularity:
 * write side — ``add_tags`` tagged ``thread:{id}``, stamping a processed
   message's tags onto its not-yet-processed siblings.
 
-These tests pin the fix (both sides operate on the matched MESSAGE) and the
-forward-only ``_PENDING_QUERY`` (``to:"<recipient>" AND NOT
-tag:caddy_processed``).
+These tests pin the fix (both sides operate on the matched MESSAGE), the
+AUTO-18 M1 catchall ``_PENDING_QUERY`` (``path:<folder>/** AND NOT
+tag:caddy_processed`` — the old ``to:"forwarding@…"`` selector starved the
+per-user catchall), and that ``EmailMeta.recipient`` is surfaced from the
+matched message's headers.
 
 No pytest-asyncio in the dev group, so coroutines are driven with
 ``asyncio.run`` like the rest of the suite.
@@ -43,12 +44,15 @@ _THREAD = {
 }
 
 
-def _route_run(summary_threads, msg_tags):
+def _route_run(summary_threads, msg_tags, msg_raw=None):
     """Build a subprocess.run stand-in that routes notmuch invocations.
 
     * ``notmuch search --format=json ...``  → the thread summary list
     * ``notmuch search --output=tags id:X`` → that message's OWN tags
+    * ``notmuch show --format=raw id:X``     → that message's raw headers/body
+      (drives ``EmailMeta.recipient`` via ``extract_recipient``)
     """
+    msg_raw = msg_raw or {}
 
     def _run(argv, **kwargs):
         if "--format=json" in argv:
@@ -59,26 +63,35 @@ def _route_run(summary_threads, msg_tags):
             mid = qid[3:]
             body = "\n".join(msg_tags.get(mid, [])) + "\n"
             return SimpleNamespace(returncode=0, stdout=body, stderr="")
+        if "--format=raw" in argv:
+            qid = argv[-1]
+            assert qid.startswith("id:"), f"expected id: query, got {qid!r}"
+            mid = qid[3:]
+            return SimpleNamespace(returncode=0, stdout=msg_raw.get(mid, ""), stderr="")
         raise AssertionError(f"unexpected notmuch argv {argv}")
 
     return _run
 
 
 # ---------------------------------------------------------------------------
-# selector — forward-only _PENDING_QUERY
+# selector — AUTO-18 M1 catchall path: _PENDING_QUERY
 # ---------------------------------------------------------------------------
 
 
-def test_pending_query_targets_forward_recipient():
-    """The selector matches forwards by the To header and excludes already
-    processed messages — NOT a whole-inbox tag sweep."""
-    assert ns._PENDING_QUERY == f'to:"{ns._FORWARD_RECIPIENT}" AND NOT tag:caddy_processed'
-    assert "@" in ns._FORWARD_RECIPIENT
+def test_pending_query_is_path_scoped():
+    """The selector sweeps the whole catchall maildir folder by ``path:`` and
+    excludes already-processed messages — NOT a ``to:`` recipient match (the
+    old form starved the per-user catchall)."""
+    assert ns._PENDING_QUERY == f"path:{ns._CATCHALL_FOLDER}/** AND NOT tag:caddy_processed"
+    assert ns._PENDING_QUERY.startswith("path:")
+    assert "NOT tag:caddy_processed" in ns._PENDING_QUERY
+    assert "to:" not in ns._PENDING_QUERY
 
 
-def test_list_pending_query_is_recipient_scoped(monkeypatch):
-    """list_pending shells the recipient selector, date-bounded — never a
-    folder:/path: scope (validated live: those match the wrong copies)."""
+def test_list_pending_query_is_path_scoped(monkeypatch):
+    """list_pending shells the ``path:`` catchall selector, date-bounded —
+    never a ``to:`` recipient scope (validated live: ``to:`` starves the
+    per-user catchall while ``path:`` captures the whole folder)."""
     captured: dict = {}
 
     def _run(argv, **kwargs):
@@ -91,10 +104,13 @@ def test_list_pending_query_is_recipient_scoped(monkeypatch):
     asyncio.run(NotmuchSource().list_pending())
 
     query = captured["argv"][-1]
-    assert f'to:"{ns._FORWARD_RECIPIENT}"' in query
+    assert f"path:{ns._CATCHALL_FOLDER}/**" in query
     assert "NOT tag:caddy_processed" in query
     assert "date:" in query
-    assert "folder:" not in query and "path:" not in query
+    assert "to:" not in query
+    # The path: term must ride in ONE argv element (no shell), so the @ and **
+    # glob reach notmuch literally rather than being split or shell-expanded.
+    assert captured["argv"][-1] == query and query.count("path:") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -104,9 +120,16 @@ def test_list_pending_query_is_recipient_scoped(monkeypatch):
 
 def test_list_pending_uses_matched_message_own_tags(monkeypatch):
     """The forward's EmailMeta.tags is its OWN tag set ({"inbox"}), NOT the
-    poisoned thread union — so the orchestrator won't read it as done."""
+    poisoned thread union — so the orchestrator won't read it as done. Its
+    ``recipient`` is surfaced from the matched message's own headers."""
     monkeypatch.setattr(
-        ns.subprocess, "run", _route_run([_THREAD], {_FWD_ID: ["inbox"], _ORIG_ID: ["evaluated"]})
+        ns.subprocess,
+        "run",
+        _route_run(
+            [_THREAD],
+            {_FWD_ID: ["inbox"], _ORIG_ID: ["evaluated"]},
+            msg_raw={_FWD_ID: "To: dough@careercaddy.online\r\n\r\nbody"},
+        ),
     )
 
     metas = asyncio.run(NotmuchSource().list_pending())
@@ -120,6 +143,27 @@ def test_list_pending_uses_matched_message_own_tags(monkeypatch):
     assert m.tags == {"inbox"}
     assert "evaluated" not in m.tags
     assert "caddy_processed" not in m.tags
+    # AUTO-18 M1: the @careercaddy.online localpart is surfaced for the owner gate.
+    assert m.recipient == "dough"
+
+
+def test_recipient_none_when_no_caddy_address(monkeypatch):
+    """An over-captured personal-alias original (no @careercaddy.online
+    recipient) surfaces recipient=None — the triage owner gate drops it."""
+    monkeypatch.setattr(
+        ns.subprocess,
+        "run",
+        _route_run(
+            [_THREAD],
+            {_FWD_ID: ["inbox"]},
+            msg_raw={_FWD_ID: "To: doug@passiveobserver.com\r\n\r\nbody"},
+        ),
+    )
+
+    metas = asyncio.run(NotmuchSource().list_pending())
+
+    assert len(metas) == 1
+    assert metas[0].recipient is None
 
 
 def test_list_by_query_also_message_granular(monkeypatch):

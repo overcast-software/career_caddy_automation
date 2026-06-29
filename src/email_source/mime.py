@@ -18,8 +18,42 @@ from __future__ import annotations
 import email
 import logging
 from email.message import Message
+from email.utils import getaddresses
 
 logger = logging.getLogger(__name__)
+
+_CADDY_DOMAIN = "@careercaddy.online"
+# Recipient headers scanned in priority order. Delivered-To / X-Original-To
+# reflect the actual envelope drop (the catchall's true target) and win over a
+# cosmetic To when both are present; To is the fallback the genuine per-user
+# forwards carry on their own (verified live: ``dough@`` catchall mail has only
+# a To header).
+_RECIPIENT_HEADERS = ("Delivered-To", "X-Original-To", "To")
+
+
+def extract_recipient(raw: str) -> str | None:
+    """Return the ``@careercaddy.online`` localpart this message was addressed to.
+
+    Scans the recipient headers in priority ``Delivered-To`` > ``X-Original-To``
+    > ``To`` and returns the localpart of the first ``@careercaddy.online``
+    address found — e.g. ``"dough"`` for ``dough@careercaddy.online``. This is
+    the owner-resolution key for the catchall hard gate (AUTO-18 M1).
+
+    Returns ``None`` when no ``@careercaddy.online`` recipient is present. The
+    catchall maildir over-captures original job-board alerts addressed to the
+    operator's personal aliases (``doug@passiveobserver.com`` etc.); those have
+    no CC owner and must drop without a JobPost. ``getaddresses`` handles both
+    bare (``dough@careercaddy.online``) and display-name
+    (``"Dough" <dough@careercaddy.online>``) forms.
+    """
+    msg = email.message_from_string(raw)
+    for header in _RECIPIENT_HEADERS:
+        values = msg.get_all(header, [])
+        for _name, addr in getaddresses(values):
+            addr = (addr or "").strip().lower()
+            if addr.endswith(_CADDY_DOMAIN):
+                return addr[: -len(_CADDY_DOMAIN)] or None
+    return None
 
 
 def _walk(msg: Message, plain_text: str, html_content: str) -> tuple[str, str]:
