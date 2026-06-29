@@ -1,9 +1,21 @@
-"""Forward-path triage — a light pass over the emails Doug forwards to
-``forwarding@careercaddy.online``.
+"""Catchall triage — a light pass over the whole per-user catchall maildir.
 
-Doug triages job mail himself in Thunderbird and forwards the keepers to the
-forward recipient; the forward IS the "evaluate this" signal. So this is a
-light pass, not a classifier gauntlet — two deterministic paths per forward:
+The catchall delivers every ``<username>@careercaddy.online`` message into one
+maildir folder, so caddy-inbox sweeps the whole folder (``path:`` selector, see
+``src/email_source/notmuch_source.py``) rather than only ``To: forwarding@``.
+Each message is OWNED by the ``<username>`` it was addressed to, and a hard
+gate runs FIRST per message (AUTO-18 M1):
+
+    gate (owner)        →  resolve ``meta.recipient`` (the @careercaddy.online
+                           localpart) to a CC user via the staff-only users
+                           filter. No user (catchall spam, a bare ``forwarding@``
+                           drop, or an over-captured personal-alias original) →
+                           DROP cheaply: tag `caddy_processed` + `caddy_no_user`,
+                           NO LLM call, NO JobPost. A resolver error (api down)
+                           leaves the message unprocessed for a retry.
+
+Past the gate the light pass is two deterministic paths, and every JobPost it
+creates is attributed to the owning user (``created_by_id``):
 
     stage 1 (classify)  →  one cheap "is this a job?" check; tag `evaluated`
                            (a resume checkpoint) and `job_post` when it is.
@@ -12,13 +24,13 @@ light pass, not a classifier gauntlet — two deterministic paths per forward:
                            known-good links to the poller as `hold` scrapes
                            carrying `job_post_id` so the runner AUGMENTS the
                            just-created post (never mints a second one).
-    stage I (inline)    →  fallback when a forward has no link: pull a
+    stage I (inline)    →  fallback when a message has no link: pull a
                            link-less JobPost out of a JD pasted inline.
 
-`caddy_processed` is written on EVERY terminal path so the
-``NOT tag:caddy_processed`` selector never re-runs the LLMs on the backlog.
-All tag reads/writes are MESSAGE-granular (``meta.id``), never thread —
-a forward sharing a thread with an already-processed original is judged on
+`caddy_processed` is written on EVERY terminal path (including the no-user
+drop) so the ``NOT tag:caddy_processed`` selector never re-runs the LLMs on the
+backlog. All tag reads/writes are MESSAGE-granular (``meta.id``), never thread —
+a message sharing a thread with an already-processed original is judged on
 its own state (AUTO-32). Refine + follow-up handling are deliberately gone.
 
 Backend is chosen by ``CADDY_EMAIL_BACKEND`` (``notmuch`` default, ``imap``
@@ -67,6 +79,7 @@ from src.client.api_client import (
     create_job_post_with_company_check,
     create_scrape,
     fetch_profile_readiness,
+    find_user_by_username,
     get_scrapes,
 )
 from src.email_source import EmailMeta, EmailSource, make_source
@@ -282,8 +295,14 @@ async def _create_posts_from_urls(
     urls,
     created_acc: list[dict] | None = None,
     auto_scrape_known_good: bool | None = None,
+    owner_user_id: int | None = None,
 ) -> dict:
     """Create a JobPost per extracted URL.
+
+    ``owner_user_id`` (AUTO-18 M1), when set, attributes every created post to
+    the CC user the catchall forward was addressed to (threaded to the api as
+    ``created_by_id``); ``None`` (the default for other callers and tests)
+    sends the legacy unattributed payload.
 
     ``auto_scrape_known_good`` gates free-tier auto-enrichment (AUTO-29):
     each successful post on a *known-good* domain also gets a dedupe-guarded
@@ -324,6 +343,7 @@ async def _create_posts_from_urls(
                     link=link.url,
                     description=desc,
                     source="email",
+                    created_by_id=owner_user_id,
                 )
             else:
                 raw = await create_job_post_minimal(
@@ -331,6 +351,7 @@ async def _create_posts_from_urls(
                     title=link.title,
                     link=link.url,
                     description=desc,
+                    created_by_id=owner_user_id,
                 )
         except Exception as exc:
             logger.warning("  job-post raised for %s: %s", link.url, exc)
@@ -411,9 +432,14 @@ async def _create_inline_job_post(
     api: ApiClient,
     res: InlinePostResult,
     created_acc: list[dict] | None = None,
+    owner_user_id: int | None = None,
 ) -> str | None:
     """POST a JobPost from an inline-JD email. Returns "created", "duplicate",
-    or None on failure. link is null; source is "email_direct"."""
+    or None on failure. link is null; source is "email_direct".
+
+    ``owner_user_id`` (AUTO-18 M1), when set, attributes the post to the CC
+    user the catchall forward was addressed to (threaded as ``created_by_id``);
+    ``None`` keeps the legacy unattributed payload."""
     description = res.description
     if res.recruiter_contact:
         description = f"Source: direct email from {res.recruiter_contact}\n\n{description}"
@@ -429,6 +455,7 @@ async def _create_inline_job_post(
                 salary_max=res.salary_max,
                 remote_ok=res.remote_ok,
                 source="email_direct",
+                created_by_id=owner_user_id,
             )
         else:
             raw = await create_job_post_minimal(
@@ -436,6 +463,7 @@ async def _create_inline_job_post(
                 title=res.title,
                 description=description,
                 source="email_direct",
+                created_by_id=owner_user_id,
             )
         resp = json.loads(raw)
     except Exception as exc:
@@ -465,6 +493,45 @@ async def _create_inline_job_post(
     return "created"
 
 
+class OwnerResolveError(RuntimeError):
+    """The username→user-id resolver could not get a DEFINITIVE answer from
+    the api (network down, 5xx/403 envelope, or an unreadable body).
+
+    Distinct from a definitive "no such user" (which ``_resolve_owner``
+    signals by returning ``None``). Raising it leaves the catchall message
+    UNprocessed so it retries next cycle, instead of being mis-dropped as
+    catchall spam — "never silently lose a real forward" (AUTO-18 M1).
+    """
+
+
+async def _resolve_owner(api: ApiClient, localpart: str) -> int | None:
+    """Resolve a catchall recipient localpart to its CC user id.
+
+    Wraps ``find_user_by_username`` and mirrors its "empty list, not raise"
+    contract: a syntactically valid but unknown username yields an empty list
+    → return ``None`` (a DEFINITIVE no-user verdict — the caller drops the
+    message). Any NON-definitive failure (api error envelope, unparseable
+    body, unreadable id) raises ``OwnerResolveError``; a raised httpx error
+    from ``api.get`` propagates as-is. Either way the caller leaves the
+    message unprocessed for a retry rather than dropping a possibly-real
+    forward.
+    """
+    raw = await find_user_by_username(api, localpart)
+    try:
+        resp = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise OwnerResolveError(f"unparseable users response for {localpart!r}") from exc
+    if not resp.get("success"):
+        raise OwnerResolveError(f"users lookup failed for {localpart!r}: {resp.get('error')}")
+    users = (resp.get("data") or {}).get("data") or []
+    if not users:
+        return None
+    try:
+        return int(users[0]["id"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise OwnerResolveError(f"unreadable user id for {localpart!r}") from exc
+
+
 async def _triage_one(
     meta: EmailMeta,
     source: EmailSource,
@@ -473,13 +540,24 @@ async def _triage_one(
     api: ApiClient,
     created_acc: list[dict] | None = None,
 ) -> TriageOutcome:
-    """Drive one forwarded email through the light forward-path flow. Returns
-    the outcome bucket + tags-added diff (+ extraction introspection) for the
+    """Drive one catchall email through the light triage flow. Returns the
+    outcome bucket + tags-added diff (+ extraction introspection) for the
     summary counter and the Mongo per-email record.
 
-    Two paths only — see the module docstring. All tag reads/writes are
-    MESSAGE-granular (``meta.id``), never thread (AUTO-32), and
-    ``caddy_processed`` is written on EVERY terminal path so the
+    A hard owner gate runs FIRST (AUTO-18 M1): the catchall delivers every
+    ``<username>@careercaddy.online`` message into one maildir, so the
+    ``meta.recipient`` localpart must resolve to a real CC user before any LLM
+    call. A recipient that doesn't resolve (catchall spam, a bare
+    ``forwarding@`` drop, an over-captured personal-alias original, or no
+    ``@careercaddy.online`` recipient at all) is dropped cheaply — tagged
+    ``caddy_processed`` + ``caddy_no_user`` with outcome ``no_user`` and NO
+    JobPost. A resolver ERROR (api/network down) is NOT a no-user verdict: it
+    propagates so the message stays unprocessed and retries next cycle.
+
+    Past the gate, two paths only — see the module docstring. Each created
+    JobPost is attributed to the owning user via ``created_by_id``. All tag
+    reads/writes are MESSAGE-granular (``meta.id``), never thread (AUTO-32),
+    and ``caddy_processed`` is written on EVERY terminal path so the
     ``NOT tag:caddy_processed`` selector never re-runs the LLMs on the
     backlog.
 
@@ -501,6 +579,20 @@ async def _triage_one(
         )
 
     try:
+        # Hard owner gate (AUTO-18 M1) — BEFORE any LLM call. A None recipient
+        # or a localpart that doesn't resolve to a CC user is dropped: tag
+        # `caddy_processed` (so it stops matching) + a distinct `caddy_no_user`
+        # audit tag, no classify/extract/create. A resolver error propagates
+        # (see `_resolve_owner`) so a real forward is never lost to an api blip.
+        localpart = meta.recipient
+        owner_user_id = await _resolve_owner(api, localpart) if localpart else None
+        if owner_user_id is None:
+            await source.add_tags(meta.id, ["caddy_processed", "caddy_no_user"])
+            tags.update(["caddy_processed", "caddy_no_user"])
+            final_outcome = "no_user"
+            logger.info("[NOUSR] %s  recipient=%r  %s", email_id, localpart, meta.subject)
+            return _result()
+
         # Stage 1 — classify (only if not yet evaluated). `evaluated` is a
         # cheap resume checkpoint: an already-classified forward skips the LLM
         # call and resumes at extraction.
@@ -550,7 +642,11 @@ async def _triage_one(
         introspection = _build_introspection(text, extracted)
         if extracted.job_urls:
             url_outcome = await _create_posts_from_urls(
-                api, extracted.job_urls, created_acc, auto_scrape_known_good=True
+                api,
+                extracted.job_urls,
+                created_acc,
+                auto_scrape_known_good=True,
+                owner_user_id=owner_user_id,
             )
             if not url_outcome["failed"]:
                 await source.add_tags(meta.id, ["caddy_processed"])
@@ -577,7 +673,9 @@ async def _triage_one(
         # mark the forward processed so it stops re-matching.
         res = await _run_inline_post(inline_post_agent, email_id)
         if res.title and res.confidence >= CONFIDENCE_FLOOR:
-            inline_outcome = await _create_inline_job_post(api, res, created_acc)
+            inline_outcome = await _create_inline_job_post(
+                api, res, created_acc, owner_user_id=owner_user_id
+            )
             await source.add_tags(meta.id, ["caddy_processed"])
             tags.add("caddy_processed")
             if inline_outcome is None:

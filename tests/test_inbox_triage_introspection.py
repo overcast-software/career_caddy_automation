@@ -117,12 +117,14 @@ def _thin_inline() -> SimpleNamespace:
 
 def _extract_meta() -> EmailMeta:
     """An already-classified forward (``evaluated``/``job_post``) — skips the
-    classify call and routes straight to stage E (extract → create JobPost)."""
+    classify call and routes straight to stage E (extract → create JobPost).
+    Carries a ``recipient`` so the AUTO-18 M1 owner gate lets it through."""
     return EmailMeta(
         id="m-extract@example.com",
         subject="Fwd: Principal Software Engineer",
         tags={"evaluated", "job_post"},
         thread_id="t-extract",
+        recipient="dough",
     )
 
 
@@ -136,6 +138,9 @@ def _drive(
     ``None``. The inline agent is exercised only when ``extracted.job_urls``
     is empty.
     """
+    # AUTO-18 M1: the owner gate runs before stage E — resolve the recipient
+    # to a CC user so the message reaches extraction.
+    monkeypatch.setattr(it, "_resolve_owner", AsyncMock(return_value=7))
     monkeypatch.setattr(it, "_load_email_text", lambda email_id: body)
     monkeypatch.setattr(it, "extract_job_urls", AsyncMock(return_value=extracted))
     monkeypatch.setattr(

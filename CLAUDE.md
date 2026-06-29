@@ -95,7 +95,7 @@ uv run --group dev pytest tests/<file>::<test>
 | `caddy-url <url>` | `src.pipelines.url_to_caddy:run` — scrape one URL → post |
 | `caddy-email` | `src.pipelines.email_to_caddy:run` — notmuch → scrape → post |
 | `caddy-classify` | `scripts.tag_emails:run` — classify/tag emails daemon (stage 1 only) |
-| `caddy-inbox` | `scripts.inbox_triage:run` — forward-path triage daemon (classify → extract-links / inline-fallback); see below |
+| `caddy-inbox` | `scripts.inbox_triage:run` — catchall per-user triage daemon (owner-gate → classify → extract-links / inline-fallback); see below |
 | `caddy-process` | `scripts.process_tagged:run` |
 | `caddy-orchestrator` | `src.agents.a2a_orchestrator:run` — A2A client/REPL (`--web` for UI) |
 | `caddy-gateway` | `mcp_servers.agents_gateway:main` — exposes sub-agents as MCP tools (default) or A2A services (`--mode a2a`) |
@@ -104,14 +104,25 @@ uv run --group dev pytest tests/<file>::<test>
 
 Most long-running pipelines support `--loop` and `--interval`.
 
-### `caddy-inbox` triage pipeline (forward-path)
+### `caddy-inbox` triage pipeline (catchall, per-user)
 
-`caddy-inbox` triages ONLY the emails Doug forwards to
-`forwarding@careercaddy.online` — the forward IS the "evaluate this"
-signal, so it's a *light pass*, not a classifier gauntlet. The notmuch
-selector is `to:"forwarding@careercaddy.online" AND NOT
-tag:caddy_processed` (override the recipient with `CADDY_INBOX_RECIPIENT`).
-Two deterministic paths per forward:
+`caddy-inbox` triages the WHOLE per-user catchall maildir — every
+`<username>@careercaddy.online` message lands in one folder, so the notmuch
+selector is `path:forwarding@careercaddy.online/Inbox/** AND NOT
+tag:caddy_processed` (override the folder with `CADDY_INBOX_NOTMUCH_FOLDER`).
+The old `to:"forwarding@…"` selector starved (it matched only the handful Doug
+forwarded to the bare address); the `path:` sweep captures `dough@`/`wisevehicle@`
+mail too. Each message is OWNED by the `<username>` it was addressed to. A hard
+gate runs FIRST: `meta.recipient` (the `@careercaddy.online` localpart, surfaced
+by `src/email_source/mime.py::extract_recipient`) must resolve to a CC user via
+the staff-only users filter. A recipient that doesn't resolve (catchall spam, a
+bare `forwarding@` drop, or an over-captured personal-alias original with no
+`@careercaddy.online` recipient) is DROPPED cheaply — tagged `caddy_processed` +
+`caddy_no_user`, no LLM call, no JobPost (outcome `no_user`). A resolver error
+(api/network down) leaves the message unprocessed for a retry. Past the gate
+it's a *light pass*, not a classifier gauntlet, and each created JobPost is
+attributed to the owning user (`created_by_id`). Two deterministic paths per
+message:
 
 1. **classify** — one cheap `gpt-4o-mini` "is this a job?" check. Tags
    `evaluated` (a resume checkpoint) and `job_post` when it is; a non-job
