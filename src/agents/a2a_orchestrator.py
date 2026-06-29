@@ -30,6 +30,7 @@ from typing import Any
 
 import httpx
 from pydantic_ai import Agent
+from pydantic_ai.capabilities import ProcessHistory
 
 from src.agents.agent_factory import get_model, register_defaults
 from src.agents.history import sanitize_orphaned_tool_calls
@@ -247,7 +248,7 @@ a2a_orchestrator = Agent(
     get_model("caddy"),
     name="a2a_orchestrator",
     system_prompt=SYSTEM_PROMPT,
-    history_processors=[sanitize_orphaned_tool_calls],
+    capabilities=[ProcessHistory(sanitize_orphaned_tool_calls)],
 )
 
 
