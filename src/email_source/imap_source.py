@@ -54,3 +54,9 @@ class ImapSource:
             "IMAP backend has no notmuch-style tag query support yet; "
             "--show only works with CADDY_EMAIL_BACKEND=notmuch."
         )
+
+    async def list_by_message_id(self, message_id: str) -> list[EmailMeta]:
+        raise NotImplementedError(
+            "IMAP backend has no message-id fetch support yet; "
+            "--message-id only works with CADDY_EMAIL_BACKEND=notmuch."
+        )

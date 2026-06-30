@@ -227,3 +227,32 @@ class NotmuchSource:
             if meta is not None:
                 out.append(meta)
         return out
+
+    async def list_by_message_id(self, message_id: str) -> list[EmailMeta]:
+        """Fetch a single message by its notmuch Message-ID — NOT date-scoped.
+
+        Powers ``caddy-inbox --message-id`` for one-off targeted (re)triage of
+        a specific forward (debugging, or the AUTO-36 extraction-eval cases).
+        Unlike ``list_pending`` / ``list_by_query`` there is no ``date:``
+        window: a Message-ID is globally unique, so date-scoping would only
+        risk missing an older message. Returns ``[]`` when nothing matches.
+        Tag state is untouched — an already-processed message still triages to
+        ``already_done`` downstream. Accepts a bare id, an ``id:``-prefixed id,
+        or an ``<angle-bracketed>`` id.
+        """
+        mid = message_id.strip().removeprefix("id:").strip().strip("<>")
+        result = subprocess.run(
+            ["notmuch", "search", "--format=json", "--limit=1", f"id:{mid}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"notmuch search failed: {result.stderr.strip()}")
+        threads = json.loads(result.stdout) if result.stdout.strip() else []
+        out: list[EmailMeta] = []
+        for thread in threads:
+            meta = _thread_to_meta(thread)
+            if meta is not None:
+                out.append(meta)
+        return out

@@ -82,6 +82,13 @@ class EmailSource(Protocol):
         ``hasattr``-guard before use."""
         ...
 
+    async def list_by_message_id(self, message_id: str) -> list[EmailMeta]:
+        """Fetch a single message by its Message-ID, NOT date-scoped (powers
+        ``caddy-inbox --message-id`` for one-off targeted (re)triage). Returns
+        ``[]`` when nothing matches. Backends that can't answer raise
+        ``NotImplementedError``; callers ``hasattr``-guard before use."""
+        ...
+
 
 def make_source(backend: str | None = None) -> EmailSource:
     """Resolve the active email backend.

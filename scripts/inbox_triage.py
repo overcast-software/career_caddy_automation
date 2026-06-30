@@ -715,12 +715,39 @@ async def _triage_one(
         )
 
 
-async def run_once(limit: int, backend: str | None, days_back: int) -> None:
+async def run_once(
+    limit: int,
+    backend: str | None,
+    days_back: int,
+    message_id: str | None = None,
+    query: str | None = None,
+) -> None:
     source = make_source(backend)
-    pending = await source.list_pending(limit=limit, days_back=days_back)
-    if not pending:
-        logger.info("No pending emails.")
-        return
+    if message_id:
+        if not hasattr(source, "list_by_message_id"):
+            raise SystemExit(
+                f"--message-id is not supported for backend {type(source).__name__}; "
+                "only NotmuchSource implements it."
+            )
+        pending = await source.list_by_message_id(message_id)
+        if not pending:
+            logger.info("No message found for id %s", message_id)
+            return
+    elif query:
+        if not hasattr(source, "list_by_query"):
+            raise SystemExit(
+                f"--query is not supported for backend {type(source).__name__}; "
+                "only NotmuchSource implements it."
+            )
+        pending = await source.list_by_query(query, limit=limit, days_back=days_back)
+        if not pending:
+            logger.info("No messages match query: %s", query)
+            return
+    else:
+        pending = await source.list_pending(limit=limit, days_back=days_back)
+        if not pending:
+            logger.info("No pending emails.")
+            return
 
     classify_agent = get_classify_agent()
     inline_post_agent = get_inline_post_agent()
@@ -1010,13 +1037,52 @@ async def main() -> None:
         default=20,
         help="Max emails listed by --show (default: 20).",
     )
+    parser.add_argument(
+        "--message-id",
+        type=str,
+        default=None,
+        metavar="ID",
+        help=(
+            "Process exactly ONE message by its notmuch Message-ID, in a single "
+            "pass and NOT date-scoped. For one-off targeted (re)triage of a "
+            "specific forward — debugging or the AUTO-36 extraction-eval cases. "
+            "Respects existing tags: an already-processed message triages to "
+            "'already_done'. Mutually exclusive with --query."
+        ),
+    )
+    parser.add_argument(
+        "--query",
+        type=str,
+        default=None,
+        metavar="NOTMUCH_QUERY",
+        help=(
+            "Process messages matching an arbitrary notmuch query (date-scoped "
+            "by --days-back, capped by --limit) instead of the default pending "
+            "selector — e.g. --query 'to:dough@careercaddy.online'. A single "
+            "pass. Mutually exclusive with --message-id."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.message_id and args.query:
+        raise SystemExit("--message-id and --query are mutually exclusive.")
 
     if args.status or args.show is not None:
         await print_status(args.backend, args.days_back, args.show, args.show_limit)
         return
 
-    if args.loop:
+    if args.message_id or args.query:
+        # A targeted run is always a single pass.
+        if args.loop:
+            logger.info("--message-id/--query implies a single pass; ignoring --loop.")
+        await run_once(
+            args.limit,
+            args.backend,
+            args.days_back,
+            message_id=args.message_id,
+            query=args.query,
+        )
+    elif args.loop:
         await _run_loop(args.limit, args.backend, args.days_back, args.interval)
     else:
         await run_once(args.limit, args.backend, args.days_back)
