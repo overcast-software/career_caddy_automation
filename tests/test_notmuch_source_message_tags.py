@@ -179,6 +179,49 @@ def test_list_by_query_also_message_granular(monkeypatch):
     assert metas[0].tags == {"inbox", "job_post"}
 
 
+def test_list_by_message_id_not_date_scoped(monkeypatch):
+    """``--message-id`` targets exactly one message by id with NO ``date:``
+    window (a Message-ID is globally unique; date-scoping would only risk
+    missing an older message). Returns the matched message's own meta."""
+    captured: dict = {}
+
+    def _run(argv, **kwargs):
+        if "--format=json" in argv:
+            captured["argv"] = argv
+            return SimpleNamespace(returncode=0, stdout=json.dumps([_THREAD]), stderr="")
+        if "--output=tags" in argv:
+            return SimpleNamespace(returncode=0, stdout="inbox\n", stderr="")
+        if "--format=raw" in argv:
+            return SimpleNamespace(
+                returncode=0, stdout="To: dough@careercaddy.online\r\n\r\nbody", stderr=""
+            )
+        raise AssertionError(f"unexpected notmuch argv {argv}")
+
+    monkeypatch.setattr(ns.subprocess, "run", _run)
+    metas = asyncio.run(NotmuchSource().list_by_message_id(_FWD_ID))
+
+    query = captured["argv"][-1]
+    assert query == f"id:{_FWD_ID}"  # exact id query, no date wrap
+    assert "date:" not in query
+    assert "--limit=1" in captured["argv"]
+    assert len(metas) == 1 and metas[0].id == _FWD_ID
+
+
+def test_list_by_message_id_strips_prefix_and_brackets(monkeypatch):
+    """Accepts a bare id, an ``id:``-prefixed id, or an ``<angle-bracketed>``
+    id — all normalize to the same ``id:<bare>`` query."""
+    captured: dict = {}
+
+    def _run(argv, **kwargs):
+        if "--format=json" in argv:
+            captured["argv"] = argv
+        return SimpleNamespace(returncode=0, stdout="[]", stderr="")
+
+    monkeypatch.setattr(ns.subprocess, "run", _run)
+    asyncio.run(NotmuchSource().list_by_message_id(f"id:<{_FWD_ID}>"))
+    assert captured["argv"][-1] == f"id:{_FWD_ID}"
+
+
 def test_message_tags_returns_own_tag_set(monkeypatch):
     monkeypatch.setattr(
         ns.subprocess,
