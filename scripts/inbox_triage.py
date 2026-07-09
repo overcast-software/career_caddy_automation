@@ -20,10 +20,13 @@ creates is attributed to the owning user (``owner_user_id``):
     stage 1 (classify)  →  one cheap "is this a job?" check; tag `evaluated`
                            (a resume checkpoint) and `job_post` when it is.
     stage E (extract)   →  render the body (html-only forwards included),
-                           extract links, create a JobPost per link, and hand
-                           known-good links to the poller as `hold` scrapes
-                           carrying `job_post_id` so the runner AUGMENTS the
-                           just-created post (never mints a second one).
+                           extract links, create a JobPost per link, and
+                           (opt-in) hand the just-created post to the runner as
+                           a `hold` scrape carrying `job_post_id` so it AUGMENTS
+                           that post (never mints a second one). Two env gates,
+                           both default OFF: `CADDY_AUTO_SCRAPE` scrapes every
+                           new post on any domain; `CADDY_FORWARD_AUTO_SCRAPE_
+                           KNOWN_GOOD` scrapes only known-good hosts for free.
     stage I (inline)    →  fallback when a message has no link: pull a
                            link-less JobPost out of a JD pasted inline.
 
@@ -233,6 +236,54 @@ def _auto_scrape_known_good_enabled() -> bool:
     }
 
 
+def _auto_scrape_all_enabled() -> bool:
+    """Opt-in gate for all-domain hold-scrape-per-created-post (CC-133, default OFF).
+
+    Reads ``CADDY_AUTO_SCRAPE`` with the same truthy contract as
+    ``process_tagged._auto_scrape_enabled`` (1/true/yes/on). Where the
+    known-good gate above only enriches Tier-0 hosts and skips the LLM tiers,
+    THIS gate queues a ``hold`` scrape for EVERY newly created JobPost
+    regardless of domain, so the idle scrape runner claims email-sourced posts
+    and populates their descriptions (auth-walled hosts complete when the
+    headed runner with warm cookies is up). v0 has zero domain heuristics; a
+    ``requires_auth``/known-good pre-filter is deferred as the v1 nuance.
+
+    Off unless explicitly enabled. Deliberately does NOT use
+    ``get_scrapes(job_post_id=...)`` as a dedupe pre-check — the api ignores
+    ``filter[job_post_id]`` and returns the global scrape set, so a pre-check
+    always sees rows and never queues (see claudex
+    ``api-scrape-viewset-ignores-job-post-filter``). Idempotency instead comes
+    from scraping ONLY on a fresh create (201); dedupe hits (200) get nothing.
+    """
+    return os.environ.get("CADDY_AUTO_SCRAPE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+async def _queue_hold_scrape(api: ApiClient, post_id, url: str) -> bool:
+    """Queue a ``hold`` scrape carrying ``job_post_id`` for a freshly created
+    post (CC-133). Returns True iff the scrape was created.
+
+    No dedupe pre-check by design (the broken ``filter[job_post_id]`` trap —
+    see ``_auto_scrape_all_enabled``): the caller only invokes this on a 201
+    fresh create, so the create itself is the idempotency guard. Fully
+    fail-safe — any error is logged and swallowed so JobPost triage is never
+    endangered (mirrors ``process_tagged``'s fail-open style).
+    """
+    try:
+        raw = await create_scrape(api, url=url, job_post_id=post_id, status="hold")
+        resp = json.loads(raw)
+        if resp.get("success"):
+            return True
+        logger.warning("  auto-scrape create failed for jp %s: %s", post_id, resp.get("error"))
+    except Exception as exc:
+        logger.warning("  auto-scrape create raised for jp %s: %s", post_id, exc)
+    return False
+
+
 async def _enrich_known_good(api: ApiClient, post_id, url: str) -> str | None:
     """Free-tier auto-enrichment for a JobPost on a known-good domain.
 
@@ -295,6 +346,7 @@ async def _create_posts_from_urls(
     urls,
     created_acc: list[dict] | None = None,
     auto_scrape_known_good: bool | None = None,
+    auto_scrape_all: bool | None = None,
     owner_user_id: int | None = None,
 ) -> dict:
     """Create a JobPost per extracted URL.
@@ -304,15 +356,29 @@ async def _create_posts_from_urls(
     ``owner_user_id``); ``None`` (the default for other callers and tests)
     sends the legacy unattributed payload.
 
-    ``auto_scrape_known_good`` gates free-tier auto-enrichment (AUTO-29):
-    each successful post on a *known-good* domain also gets a dedupe-guarded
-    ``hold`` scrape carrying ``job_post_id`` (so the runner AUGMENTS that
-    post) with ``auto_score=False`` (see ``_enrich_known_good``) so
-    ``/job-posts`` shows descriptions by morning without spending tokens.
-    The forward path passes ``True``; ``None`` (the default for other callers
-    and tests) falls back to the ``CADDY_FORWARD_AUTO_SCRAPE_KNOWN_GOOD`` env
-    gate so that contract is untouched. The enrichment is fully fail-safe, so
-    it can never break JobPost creation.
+    Two independent, opt-in auto-scrape gates queue a ``hold`` scrape carrying
+    ``job_post_id`` so the runner AUGMENTS the just-created post (never mints a
+    second one). Both are fully fail-safe, so neither can break JobPost
+    creation. For a fresh create on a known-good host they would otherwise BOTH
+    fire, so the broad gate takes precedence per-post (a post gets at most one
+    auto-scrape):
+
+    * ``auto_scrape_all`` (CC-133) — queues a plain ``hold`` scrape for EVERY
+      newly created (201) post, any domain, no domain heuristics and no dedupe
+      pre-check (the 201-only trigger IS the idempotency; see
+      ``_auto_scrape_all_enabled``). ``None`` falls back to the
+      ``CADDY_AUTO_SCRAPE`` env gate.
+    * ``auto_scrape_known_good`` (AUTO-29) — for the posts the broad gate did
+      NOT already scrape, each successful post on a *known-good* domain gets a
+      dedupe-guarded ``hold`` scrape with ``auto_score=False`` (see
+      ``_enrich_known_good``) so ``/job-posts`` shows descriptions by morning
+      without spending tokens. ``None`` falls back to the
+      ``CADDY_FORWARD_AUTO_SCRAPE_KNOWN_GOOD`` env gate. Runs for both fresh
+      creates and dedupe hits.
+
+    The forward path passes ``auto_scrape_known_good=True``; ``None`` (the
+    default for other callers and tests) preserves each gate's env-driven
+    contract.
 
     Outcome per URL is read from the api response:
       201 + new resource          → fresh create
@@ -332,6 +398,7 @@ async def _create_posts_from_urls(
         if auto_scrape_known_good is not None
         else _auto_scrape_known_good_enabled()
     )
+    scrape_all = auto_scrape_all if auto_scrape_all is not None else _auto_scrape_all_enabled()
     for link in urls:
         desc = link.description or None
         try:
@@ -377,6 +444,7 @@ async def _create_posts_from_urls(
         canonical = attrs.get("canonical_link")
         status_code = resp.get("status_code")
 
+        is_fresh_create = status_code != 200
         if status_code == 200:
             duplicates.append(link.url)
             logger.info(
@@ -408,12 +476,26 @@ async def _create_posts_from_urls(
                     }
                 )
 
+        # CC-133: all-domain auto-scrape. Opt-in (flag default OFF), fail-safe.
+        # Queues a plain `hold` scrape for every NEWLY created post (201 only)
+        # regardless of domain so the idle runner claims email-sourced posts.
+        # No dedupe pre-check — the 201-only trigger IS the idempotency (see
+        # `_auto_scrape_all_enabled`). Dedupe hits (200) get nothing.
+        scraped_here = False
+        if scrape_all and is_fresh_create and post_id is not None:
+            scraped_here = await _queue_hold_scrape(api, post_id, link.url)
+            if scraped_here:
+                scrapes_queued += 1
+                logger.info("  auto-scrape: hold scrape queued for jp %s (%s)", post_id, link.url)
+
         # AUTO-29: free-tier auto-enrichment for known-good domains. Opt-in
         # (flag default OFF), fail-safe, dedupe-aware, never scores. No-op for
         # any post whose host isn't known-good. Runs for both fresh creates
         # and dedupe hits — the dedupe guard inside skips posts already
-        # carrying a scrape.
-        if enrich and post_id is not None:
+        # carrying a scrape. Skipped when the broad CADDY_AUTO_SCRAPE gate
+        # already queued a scrape for this post, so a known-good 201 is never
+        # double-scraped.
+        if enrich and post_id is not None and not scraped_here:
             outcome = await _enrich_known_good(api, post_id, link.url)
             if outcome == "created":
                 scrapes_queued += 1
@@ -646,6 +728,7 @@ async def _triage_one(
                 extracted.job_urls,
                 created_acc,
                 auto_scrape_known_good=True,
+                auto_scrape_all=_auto_scrape_all_enabled(),
                 owner_user_id=owner_user_id,
             )
             if not url_outcome["failed"]:
