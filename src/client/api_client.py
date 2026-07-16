@@ -7,7 +7,7 @@ Career Caddy monorepo (ai/lib/api_tools.py) for standalone use.
 Usage:
     from src.client import ApiClient
 
-    api = ApiClient("https://api.careercaddy.online", "jh_xxx")
+    api = ApiClient("https://careercaddy.online", "jh_xxx")
     result = await api.get("/api/v1/job-posts/")
 """
 

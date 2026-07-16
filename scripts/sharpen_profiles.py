@@ -38,7 +38,7 @@ from fastmcp import Client
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger("sharpen_profiles")
 
-DEFAULT_MCP_URL = "https://mcp.careercaddy.online/mcp"
+DEFAULT_MCP_URL = "https://careercaddy.online/mcp"
 
 # Classification thresholds. Tuned against scrapes 172/174/175 — not
 # yet validated on a broader corpus; expect these to move once the

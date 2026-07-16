@@ -2,7 +2,7 @@
 """Analyze screenshots of failed scrapes for a domain; suggest ScrapeProfile
 improvements and optionally write safe fields back.
 
-Connects to the Career Caddy public MCP server (mcp.careercaddy.online/mcp)
+Connects to the Career Caddy public MCP server (careercaddy.online/mcp)
 using the user's jh_* API key. Staff-level keys are required because the
 screenshot endpoints are staff-only.
 
@@ -43,7 +43,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("analyze_screenshots")
 
-DEFAULT_MCP_URL = "https://mcp.careercaddy.online/mcp"
+DEFAULT_MCP_URL = "https://careercaddy.online/mcp"
 INTERACTION_HINTS_CAP = 2000
 
 

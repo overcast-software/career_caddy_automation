@@ -9,7 +9,7 @@ Career Caddy is a job hunt management platform. This toolkit adds personal autom
 - **Scrape job URLs** → extract structured data → post to Career Caddy
 - **Classify emails** → tag job postings via notmuch → process into Career Caddy
 - **Web UI** → interact with Career Caddy tools via pydantic-ai's built-in web interface
-- **MCP verification** → connect local agents to `mcp.careercaddy.online`
+- **MCP verification** → connect local agents to `careercaddy.online/mcp`
 
 ## Quickstart
 
@@ -132,7 +132,7 @@ from src.client import ApiClient, JobPostData, CareerCaddyToolset, CareerCaddyDe
 from pydantic_ai import Agent
 
 # Direct API usage
-api = ApiClient("https://api.careercaddy.online", "jh_xxx")
+api = ApiClient("https://careercaddy.online", "jh_xxx")
 result = await api.get("/api/v1/job-posts/")
 
 # Or use the pydantic-ai toolset
@@ -143,6 +143,6 @@ agent = Agent(
 )
 result = await agent.run(
     "Find all Python jobs",
-    deps=CareerCaddyDeps(api_token="jh_xxx", base_url="https://api.careercaddy.online"),
+    deps=CareerCaddyDeps(api_token="jh_xxx", base_url="https://careercaddy.online"),
 )
 ```
