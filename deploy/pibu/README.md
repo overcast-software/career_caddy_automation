@@ -29,7 +29,7 @@ across scrapes — exactly what Doug wants to watch over VNC.
 `~/.config/environment.d/career-caddy.conf`:
 
 ```
-CC_API_BASE_URL=https://api.careercaddy.online
+CC_API_BASE_URL=https://careercaddy.online
 CC_API_TOKEN=<api-key from /api/v1/api-keys/>
 CC_RUNNER_NAME=pibu
 BROWSER_ENGINE=camoufox

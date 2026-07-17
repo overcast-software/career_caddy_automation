@@ -5,10 +5,10 @@ tools through pydantic-ai's built-in web interface.
 
 Usage:
     uv run caddy-web                          # local API
-    CC_API_BASE_URL=https://api.careercaddy.online uv run caddy-web  # prod
+    CC_API_BASE_URL=https://careercaddy.online uv run caddy-web  # prod
 
 Or connect to the public MCP endpoint instead of direct API:
-    uv run caddy-web --mcp https://mcp.careercaddy.online/mcp
+    uv run caddy-web --mcp https://careercaddy.online/mcp
 """
 
 import argparse
@@ -194,7 +194,7 @@ def main():
         "--mcp",
         type=str,
         default=None,
-        help="MCP SSE endpoint URL (e.g. https://mcp.careercaddy.online/mcp). "
+        help="MCP SSE endpoint URL (e.g. https://careercaddy.online/mcp). "
         "If omitted, connects directly to CC_API_BASE_URL.",
     )
     parser.add_argument(
