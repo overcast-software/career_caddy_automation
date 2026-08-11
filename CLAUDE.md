@@ -2,26 +2,40 @@
 
 Guidance for Claude Code when working in `automation/` (formerly
 `career_caddy_automation` sibling repo, promoted to first-class
-submodule 2026-05-30). This file is a pointer; the canonical state
-lives in `automation/notes.org`.
+submodule 2026-05-30). This file is a quickstart; durable canon
+lives in claudex.
 
 ## Source of truth — read FIRST
 
-- **`automation/notes.org`** (drill via `claude/ca-*`) — email
-  triage pipeline, inbox patterns, caddy-web copilot conventions,
-  A2A orchestrator boundary, HTTP-only contract with the api.
-- **`automation/todo.org`** (drill via `claude/ca-todo-*`) —
-  automation's own autonomous-workflow todo. Parent
-  `careercaddy/todo.org` is the cross-cutting board; this one is
-  for automation's internal work.
-
-Boot sequence (every cc-auto session):
+**claudex is the source of truth for priming.** Boot every cc-auto
+session from it, with an explicit `projectId` (the dockerized MCP
+CWD-detects to a bogus `-app`):
 
 ```
-emacsclient --eval '(claude/ca-help)'
-emacsclient --eval '(claude/ca-notes-toc)'
-emacsclient --eval '(claude/ca-todo-toc)'
+mcp__claudex__get_project_context  projectId=-home-oldbones-Network-syncthing-Projects-career-caddy-automation
+mcp__claudex__recall_memory        projectId=-home-oldbones-Network-syncthing-Projects-career-caddy-automation
 ```
+
+Also recall the parent's `bootstrap` map memory under
+`-home-oldbones-Network-syncthing-Projects-career-caddy` for the
+cross-repo orientation. The canon that used to live in
+`automation/notes.org` is now claudex memories — the email triage
+pipeline, inbox patterns, caddy-web copilot conventions, the A2A
+orchestrator boundary, and the HTTP-only contract with the api.
+
+Work state lives on the **PACA** board (Automation
+`60a4405d-ac6c-4705-afb2-73b486f5df60`, prefix `AUTO`; cross-cutting
+work on Platform `438e9c51-1c71-4cad-b597-8356b0b600ec`, prefix `CC`),
+not in an org file.
+
+### RETIRED for agents — do not use
+
+`automation/notes.org`, `automation/todo.org`, and the parent
+`todo.org` are Doug's personal emacs surface: no `Read`, no writes,
+no commits. The `claude/ca-*` / `ca-todo-*` / `cc-todo-*` emacsclient
+helpers no longer exist — `~/.config/doom/elisp/` was deleted
+2026-08-04, so calling one returns a void-function error. Do not
+reintroduce them into a boot sequence.
 
 ## Project
 
@@ -37,7 +51,8 @@ at path `automation/`, alongside `api/`, `frontend/`, `agents/`. This
 repo IS `automation/` relative to the parent worktree — the canonical
 working location is `<parent>/automation/`, not the older standalone
 sibling path. The parent's [CLAUDE.md] is the top-level orientation;
-see `notes.org` → Operations / Architecture for cross-repo contracts.
+recall the parent's `bootstrap` claudex memory for cross-repo
+contracts.
 
 **Role split with `agents/` (sibling submodule):**
 - `agents/` = **service-side** — Camoufox/Playwright, scrape_graph,
@@ -195,8 +210,9 @@ traversal audit, forward audit) lives in **MongoDB** — collections per
 concern under db `cc_auto`. Rationale: Metabase has a built-in Mongo
 connector (drops the Postgres-sync layer), schema-flexible writes match
 how the pipeline evolves, and a sidecar Mongo container ships in the
-same `docker-compose.yml` cc_auto provides. See `notes.org` → `***
-State store: MongoDB, not SQLite` for the full reasoning.
+same `docker-compose.yml` cc_auto provides. Recall the claudex
+decision memory on the MongoDB-not-SQLite state store for the full
+reasoning.
 
 Collections under db `cc_auto`:
 - `triage_runs` — one doc per `run_once()` call
