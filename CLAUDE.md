@@ -1,32 +1,44 @@
 # automation/CLAUDE.md
 
-Guidance for Claude Code when working in `automation/` (formerly
-`career_caddy_automation` sibling repo, promoted to first-class
-submodule 2026-05-30). This file is a quickstart; durable canon
-lives in claudex.
+Guidance for working in `automation/` — the operator-side toolkit. New to the
+project? Start with the repo-root [CONTRIBUTING.md](../CONTRIBUTING.md).
 
-## Source of truth — read FIRST
+## The rule that defines this submodule
 
-**claudex is the source of truth for priming.** Boot every cc-auto
-session from it, with an explicit `projectId` (the dockerized MCP
-CWD-detects to a bogus `-app`):
+**HTTP-only contract with the api. No Python import ever crosses the
+boundary.** `automation/` talks to Career Caddy exclusively over the REST API
+and the public MCP endpoint — never by importing from `api/`.
+
+That's deliberate and load-bearing: `automation/` runs on *one operator's*
+own machines against *their* instance, which may be a different version than
+the code sitting next to it in the repo. A shared import would silently
+couple them and break every self-hoster.
+
+Configuration is therefore environment, not code:
 
 ```
-mcp__claudex__get_project_context  projectId=-home-oldbones-Network-syncthing-Projects-career-caddy-automation
-mcp__claudex__recall_memory        projectId=-home-oldbones-Network-syncthing-Projects-career-caddy-automation
+CC_API_BASE_URL   # your Career Caddy instance
+CC_MCP_URL        # its public MCP endpoint
+CC_API_TOKEN      # a jh_* API key, sent as: Authorization: Bearer <jh_...>
 ```
 
-Also recall the parent's `bootstrap` map memory under
-`-home-oldbones-Network-syncthing-Projects-career-caddy` for the
-cross-repo orientation. The canon that used to live in
-`automation/notes.org` is now claudex memories — the email triage
-pipeline, inbox patterns, caddy-web copilot conventions, the A2A
-orchestrator boundary, and the HTTP-only contract with the api.
+Self-hosters point these at their own domain. Nothing here should hardcode
+the maintainers' instance.
 
-Work state lives on the **PACA** board (Automation
-`60a4405d-ac6c-4705-afb2-73b486f5df60`, prefix `AUTO`; cross-cutting
-work on Platform `438e9c51-1c71-4cad-b597-8356b0b600ec`, prefix `CC`),
-not in an org file.
+## Where the line falls between `automation/` and `agents/`
+
+Both run AI, and the split is *who they serve*:
+
+- **`agents/`** — service-side, runs as containers for **everyone** on the
+  instance.
+- **`automation/`** — operator-side, runs on **one user's** machines (email
+  triage, the caddy-web copilot, orchestration).
+
+The test: *service for everyone* → `agents/`. *Operator for one user* →
+`automation/`.
+
+Maintainers: claudex holds the pipeline history and incident detail
+(projectId `…-career-caddy-automation`).
 
 ### RETIRED for agents — do not use
 
