@@ -69,6 +69,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 
+from src.agents.agent_factory import get_model
 from src.agents.email_agents import (
     InlinePostResult,
     get_classify_agent,
@@ -76,6 +77,7 @@ from src.agents.email_agents import (
 )
 from src.agents.span_validator import filter_span_atomic
 from src.agents.url_extractor import extract_job_urls
+from src.agents.usage_reporter import report_usage
 from src.client.api_client import (
     ApiClient,
     create_job_post_minimal,
@@ -132,15 +134,65 @@ def _api_client() -> ApiClient:
     )
 
 
+# Every AI call this daemon makes is tagged with this trigger, so
+# /settings/ai-spend can separate caddy-inbox's spend from the older
+# `tag_emails` pipeline, which reports the SAME agent_name.
+_USAGE_TRIGGER = "inbox_triage"
+
+
+async def _report_agent_usage(role: str, result) -> None:
+    """Record one agent call against /api/v1/ai-usages/.
+
+    This daemon reported NOTHING for seven weeks. `AiUsage`, `estimate_cost`,
+    the summary endpoint and the /settings/ai-spend page all existed; the two
+    agent calls below simply dropped `result.usage()` on the floor, and
+    `extract_job_urls` was called without the api_token its own reporting is
+    gated on. So the page that exists to show LLM spend showed a flat line
+    while CC-125 re-classified stuck emails 96 times a day.
+
+    `role` doubles as the reported `agent_name` — for these two call sites the
+    registry role and the agent name coincide (`tag_emails.py:146` reports the
+    same `email_classifier` name), so the summary can group by agent across
+    pipelines and separate them on `trigger`.
+
+    `get_model(role)` is the same call `get_agent` makes to pick the model
+    (`agent_factory.py:210`), so the reported name is what actually ran — the
+    api prices off this string, and a wrong name is a wrong cost. That holds
+    while this daemon builds its agents with no explicit `model=` override,
+    which it does.
+
+    Fail-safe: metering must never fail triage. `report_usage` already logs and
+    swallows its own errors, but the whole body is guarded anyway — a pipeline
+    that dies because the accountant fell over is a worse bug than the one this
+    fixes, and that guarantee should not depend on another module keeping its
+    docstring's promise.
+    """
+    api_token = os.environ.get("CC_API_TOKEN", "")
+    if not api_token:
+        return
+    try:
+        await report_usage(
+            api_token=api_token,
+            agent_name=role,
+            model_name=get_model(role),
+            usage=result.usage(),
+            trigger=_USAGE_TRIGGER,
+        )
+    except Exception:
+        logger.debug("usage reporting failed for %s (non-fatal)", role, exc_info=True)
+
+
 async def _run_classify(agent, email_id: str) -> bool:
     """Return True iff the email is job-related."""
     result = await agent.run(f"Classify email id: {email_id}")
+    await _report_agent_usage("email_classifier", result)
     text = (result.output or "").strip().lower()
     return text.startswith("job_post")
 
 
 async def _run_inline_post(agent, email_id: str) -> InlinePostResult:
     result = await agent.run(f"Extract inline JobPost from email id: {email_id}")
+    await _report_agent_usage("inline_post_extractor", result)
     return result.output
 
 
@@ -757,7 +809,11 @@ async def _triage_one(
             logger.warning("  load_email_text failed for %s: %s", email_id, exc)
             final_outcome = "load_failed"
             return _result()
-        extracted = await extract_job_urls(text)
+        # The api_token is what arms extract_job_urls' own usage reporting
+        # (`url_extractor.py:405` gates on it). Omitting it here is why the
+        # extractor — the most expensive call in the sweep — was also invisible
+        # on /settings/ai-spend.
+        extracted = await extract_job_urls(text, api_token=os.environ.get("CC_API_TOKEN", ""))
         # CC-111: deterministic cross-row guard. On multi-job digests
         # (ZipRecruiter /km/ trackers, LinkedIn /jobs/view/ ids) the LLM
         # extractor occasionally pairs one row's apply link with another
