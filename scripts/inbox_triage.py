@@ -341,6 +341,47 @@ async def _enrich_known_good(api: ApiClient, post_id, url: str) -> str | None:
         return None
 
 
+# CC-125. The api says "this link is already a JobPost" two different ways, and
+# only one of them used to count as a duplicate here:
+#
+#   200 + the existing resource   → the merge path (a same-link re-POST, which
+#                                   is how this pipeline backfills company /
+#                                   title / description onto an existing row)
+#   409 + code=duplicate_job_post → a canonical collision the api declined to
+#                                   merge, because the existing row is complete
+#                                   and this source does not outrank it
+#                                   (api job_hunting/api/views/jobs.py:903)
+#
+# Both mean there is nothing new to create. Bucketing the 409 as `failed` made
+# `new_failed` the outcome for an all-duplicate digest, so `caddy_processed` was
+# never written, so the `NOT tag:caddy_processed` selector re-picked the same
+# email on the next sweep and re-ran the LLMs against the same links — with no
+# terminal state, forever.
+#
+# It ran for seven weeks. Measured 2026-08-17 from the BigQuery request-log
+# sink: ~24,000 API calls/day, 68% of ALL production traffic, including 36,668
+# unfiltered `/job-posts/` list reads and the same company name looked up
+# thousands of times (Microsoft 2,912× in one week). It exhausted the GCP
+# trial credit and took prod down with it.
+#
+# A 409 WITHOUT that code stays a failure: a genuine conflict deserves the retry
+# that `new_failed` buys. This is the narrow carve-out, not "409 means fine".
+_DUPLICATE_JOB_POST_CODE = "duplicate_job_post"
+
+
+def _is_duplicate_job_post_conflict(resp: dict) -> bool:
+    """True when a non-success envelope is the api's duplicate-JobPost 409.
+
+    Reads the marker out of the error string because ``ApiClient._ok`` collapses
+    a non-2xx body into ``error="<status> - <text>"`` (``src/client/api_client.py``
+    :102-114) — the structured error doc is not preserved. The text is truncated
+    at 500 chars, but ``code`` appears in the first error object, well inside it.
+    """
+    if resp.get("status_code") != 409:
+        return False
+    return _DUPLICATE_JOB_POST_CODE in (resp.get("error") or "")
+
+
 async def _create_posts_from_urls(
     api: ApiClient,
     urls,
@@ -387,7 +428,11 @@ async def _create_posts_from_urls(
                                      the existing post; response carries the
                                      post we mapped onto, including the
                                      api-computed `canonical_link`.
-      4xx / non-success            → failed.
+      409 + duplicate_job_post     → DUPLICATE, not a failure (CC-125). A
+                                     canonical collision the api declined to
+                                     merge. Nothing to create, nothing to
+                                     retry — see `_is_duplicate_job_post_conflict`.
+      other 4xx / non-success      → failed.
     """
     created: list[str] = []
     duplicates: list[str] = []
@@ -433,6 +478,18 @@ async def _create_posts_from_urls(
             continue
 
         if not resp.get("success"):
+            # CC-125: an "already exists" 409 is a duplicate, not a failure.
+            # Skips the auto-scrape / enrichment blocks below deliberately —
+            # the api withheld the post id here, and going and finding it is a
+            # behaviour change this fix does not make.
+            if _is_duplicate_job_post_conflict(resp):
+                duplicates.append(link.url)
+                logger.info(
+                    "  job-post dup (409 canonical collision): %s  (%s)",
+                    link.title,
+                    link.url,
+                )
+                continue
             logger.warning("  job-post failed for %s: %s", link.url, resp.get("error"))
             failed.append(link.url)
             continue
