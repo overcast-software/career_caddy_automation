@@ -68,7 +68,7 @@ async def extract_job_from_content(
             api_token=token,
             agent_name="job_extractor",
             model_name=get_model_name(_EXTRACTION_MODEL),
-            usage=result.usage(),
+            usage=result.usage,
             trigger="pipeline",
             pipeline_run_id=pipeline_run_id,
         )

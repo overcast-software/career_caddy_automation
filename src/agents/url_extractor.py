@@ -403,14 +403,29 @@ async def extract_job_urls(
     agent = build_url_extractor_agent()
     result = await agent.run(email_text)
     if api_token:
-        await report_usage(
-            api_token=api_token,
-            agent_name="url_extractor",
-            model_name=get_model("job_extractor"),
-            usage=result.usage(),
-            trigger="inbox_triage",
-            pipeline_run_id=pipeline_run_id,
-        )
+        # Guarded because THIS call site took the whole triage daemon down on
+        # 2026-08-23: pydantic-ai resolved to 2.0.0 under a `>=0.0.14` floor,
+        # `usage` became a property, and `result.usage()` raised
+        # "'RunUsage' object is not callable" on all 20 emails in the sweep —
+        # AFTER each OpenAI call had already been paid for.
+        #
+        # inbox_triage.py::_report_agent_usage states the invariant this
+        # violated: "metering must never fail triage... a pipeline that dies
+        # because the accountant fell over is a worse bug than the one this
+        # fixes, and that guarantee should not depend on another module keeping
+        # its docstring's promise." It was guarded there and not here, so the
+        # promise held in the module that made it and nowhere else.
+        try:
+            await report_usage(
+                api_token=api_token,
+                agent_name="url_extractor",
+                model_name=get_model("job_extractor"),
+                usage=result.usage,
+                trigger="inbox_triage",
+                pipeline_run_id=pipeline_run_id,
+            )
+        except Exception:
+            logger.debug("usage reporting failed for url_extractor", exc_info=True)
     extracted = result.output
     before = len(extracted.job_urls)
     extracted.job_urls = await canonicalize_urls(extracted.job_urls)
