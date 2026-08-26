@@ -10,8 +10,12 @@
 #                       JobPostSerializer; lets us spot canonicalization
 #                       surprises without grepping the api log)
 #   outcome           — created (201) | merged_into_existing (200) |
-#                       failed (4xx/5xx) | invalid_response (parse fail)
-#   existing_post_id  — id we mapped onto when outcome=merged_into_existing
+#                       duplicate_conflict (409 + code=duplicate_job_post) |
+#                       failed (other 4xx/5xx) | invalid_response (parse fail)
+#   existing_post_id  — id we mapped onto when outcome=merged_into_existing,
+#                       or the row we collided with when
+#                       outcome=duplicate_conflict (the api returns it in the
+#                       409's `errors[0].meta.job_post_id`)
 #   merge_diff        — for 200 responses, which of the requested fields
 #                       were filled vs. ignored by `merge_empty_fields_from_attrs`
 #                       on the api side. This is the killer feature: catches
@@ -37,6 +41,8 @@ from collections.abc import Awaitable, Callable
 
 import logfire
 
+from src.client.api_client import error_codes, has_error_code
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,8 +55,31 @@ def _post_resource(parsed: dict) -> dict:
     return (parsed.get("data") or {}).get("data") or {}
 
 
+def _duplicate_post_id(parsed: dict) -> str | None:
+    """The existing post's id out of a ``duplicate_job_post`` 409.
+
+    The api puts it in the error object's ``meta``. This is only readable
+    because the transport preserves structured errors (AUTO-52) — under the
+    old string collapse the id was destroyed with the rest of the document,
+    which is why a duplicate conflict used to trace as an anonymous failure.
+    """
+    for err in parsed.get("errors") or []:
+        if not isinstance(err, dict) or err.get("code") != "duplicate_job_post":
+            continue
+        post_id = (err.get("meta") or {}).get("job_post_id")
+        if post_id is not None:
+            return str(post_id)
+    return None
+
+
 def _classify(parsed: dict) -> str:
     if not parsed.get("success"):
+        # A duplicate_job_post 409 is the api declining to merge a canonical
+        # collision — an expected outcome, not a failure. Tracing it as
+        # `failed` is how an all-duplicate digest looked like a broken
+        # pipeline for seven weeks (CC-125).
+        if parsed.get("status_code") == 409 and has_error_code(parsed, "duplicate_job_post"):
+            return "duplicate_conflict"
         return "failed"
     code = parsed.get("status_code")
     if code == 200:
@@ -176,12 +205,23 @@ async def trace_write(
                 post_id,
                 canonical,
             )
+        elif outcome == "duplicate_conflict":
+            existing_id = _duplicate_post_id(parsed)
+            span.set_attribute("existing_post_id", existing_id or "")
+            logger.info(
+                "dedupe.write %s: duplicate — api declined to merge into post %s "
+                "(canonical collision against a complete, higher-trust row)",
+                url,
+                existing_id or "?",
+            )
         elif outcome == "failed":
             span.set_attribute("error", parsed.get("error") or "")
+            span.set_attribute("error_codes", error_codes(parsed))
             logger.warning(
-                "dedupe.write %s: failed status=%s err=%s",
+                "dedupe.write %s: failed status=%s codes=%s err=%s",
                 url,
                 parsed.get("status_code"),
+                error_codes(parsed) or "—",
                 parsed.get("error"),
             )
 

@@ -278,6 +278,68 @@ Three layers, roughly:
 
 3. **Pipelines — `src/pipelines/`** are the end-to-end flows: `url_to_caddy`, `email_to_caddy`, `web_ui`. They wire agents + toolsets together and own the CLI surface.
 
+### The response envelope — read this before branching on an api call
+
+Every `api_client.py` function returns a **JSON string**, not a dict, and
+**never raises on a non-2xx**. `ApiClient._ok` builds the envelope:
+
+```jsonc
+{
+  "success": true,          // ONLY 200 / 201 / 202
+  "status_code": 201,
+  "data": { "data": {...} },// double-nested: the JSON:API body sits under `data`
+  "error": null,            // "<status> - <body>", truncated at 500 chars
+  "errors": []              // structured error objects; empty on success
+}
+```
+
+Three things follow, and getting any of them wrong has cost real money:
+
+- **Check `success` yourself.** A 401, 403 or 409 sails straight through with a
+  well-formed object in hand. Status-code interpretation is always the caller's
+  job.
+- **Branch on `errors[].code`, never on the `error` string.** `error` is prose
+  for humans and LLMs: truncated, and its wording is not a contract. `code` is
+  the contract. Use the helpers:
+
+  ```python
+  from src.client.api_client import error_codes, has_error_code
+
+  if has_error_code(resp, "duplicate_job_post"):
+      ...   # the api declined to merge a canonical collision — not a failure
+  ```
+
+  Each error also carries `meta`. On a `duplicate_job_post` 409 that holds the
+  **existing** post's `job_post_id`, `title`, `company_name` and `link`, so a
+  duplicate conflict tells you exactly which row it hit.
+- **`errors == []` means "no machine-readable code", not "no error".** A body
+  can be an HTML page from the edge that never reached Django. `error` still
+  carries the text; parsing never raises.
+
+Why this is written down: `_ok` used to produce only the flattened string, and
+the api's `duplicate_job_post` marker — its way of saying *this link already
+exists, nothing to do* — was indistinguishable from a genuine failure. The email
+pipeline bucketed it as `failed`, so an all-duplicate digest never reached a
+terminal state, was re-picked by the `NOT tag:caddy_processed` selector every
+sweep, and re-ran the LLMs against the same links for seven weeks (~22M input
+tokens/day; it exhausted the GCP trial credit and took prod down). That is
+CC-125; AUTO-52 removed the mechanism behind it.
+
+**`POST /api/v1/job-posts/` says "already exists" in two ways** and both mean
+there is nothing to create:
+
+| Response | Meaning |
+|---|---|
+| `200` + the existing resource | The merge path — a same-link re-POST backfilled NULL fields onto the existing row. |
+| `409` + `code=duplicate_job_post` | A canonical collision the api declined to merge, because the existing row is complete and this source does not outrank it. |
+
+A 409 **without** that code stays a failure: a genuine conflict deserves the
+retry. That is the narrow carve-out — not "409 means fine".
+
+**There is no `delete` verb.** `get` / `post` / `patch`, deliberately. cc_auto
+cannot delete a JobPost over any sanctioned surface; a destructive delete is
+api-side work. Don't add one to "complete" the CRUD set without asking.
+
 ### Multi-agent / A2A mode
 
 `caddy-orchestrator` (client) + `caddy-gateway --mode a2a` (server) implement an Agent-to-Agent pattern over HTTP/JSON-RPC 2.0:
@@ -316,5 +378,6 @@ Shared helpers for `mcp_servers/browser_server.py` and `src/agents/html_fetchers
 
 - The `src`, `lib`, `mcp_servers`, and `scripts` packages are all top-level wheel packages (see `[tool.hatch.build.targets.wheel]`). Imports use absolute paths like `from src.client.toolset import ...` and `from mcp_servers...` — don't refactor them into a single parent package without updating the wheel config.
 - Agents are *created*, not reused — call `get_agent(role)` when you need one, rather than holding a module-level instance. Model selection happens at creation time based on current env vars.
-- When adding a new Career Caddy API call: add the function in `api_client.py`, register it in `TOOL_REGISTRY` in `toolset.py`, and (if scope-limited) add it to the relevant scope set.
+- When adding a new Career Caddy API call: add the function in `api_client.py`, register it in `TOOL_REGISTRY` in `toolset.py`, and (if scope-limited) add it to the relevant scope set. Register it **only** if an LLM should be able to call it — daemon infrastructure (`find_user_by_username`, `fetch_profile_readiness`) is imported directly by scripts and deliberately kept out of the registry.
+- Anything that inspects a failed api response goes through `error_codes` / `has_error_code`, never a substring match on the `error` string. See "The response envelope" above for why.
 - Config + state are **self-contained**: `.env`, `secrets.yml`, `config/`, `var/` all live at the repo root anchored by `$CADDY_HOME` (defaults to the directory containing `pyproject.toml`). No `~/.config/career_caddy/` or `~/.local/share/career_caddy/` paths.

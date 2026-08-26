@@ -86,6 +86,7 @@ from src.client.api_client import (
     fetch_profile_readiness,
     find_user_by_username,
     get_scrapes,
+    has_error_code,
 )
 from src.email_source import EmailMeta, EmailSource, make_source
 from src.email_source.html_render import html_to_markdown
@@ -424,14 +425,16 @@ _DUPLICATE_JOB_POST_CODE = "duplicate_job_post"
 def _is_duplicate_job_post_conflict(resp: dict) -> bool:
     """True when a non-success envelope is the api's duplicate-JobPost 409.
 
-    Reads the marker out of the error string because ``ApiClient._ok`` collapses
-    a non-2xx body into ``error="<status> - <text>"`` (``src/client/api_client.py``
-    :102-114) — the structured error doc is not preserved. The text is truncated
-    at 500 chars, but ``code`` appears in the first error object, well inside it.
+    Reads ``code`` as data out of the envelope's ``errors`` list. This used to
+    substring-match the flattened ``error`` string, because ``ApiClient._ok``
+    collapsed a non-2xx body into ``error="<status> - <text>"`` and destroyed
+    the structured error document. AUTO-52 fixed that at the transport, so the
+    marker is now read from the field the api actually sets — the prose is
+    truncated at 500 chars and its wording is not a contract, ``code`` is.
     """
     if resp.get("status_code") != 409:
         return False
-    return _DUPLICATE_JOB_POST_CODE in (resp.get("error") or "")
+    return has_error_code(resp, _DUPLICATE_JOB_POST_CODE)
 
 
 async def _create_posts_from_urls(
@@ -531,9 +534,17 @@ async def _create_posts_from_urls(
 
         if not resp.get("success"):
             # CC-125: an "already exists" 409 is a duplicate, not a failure.
-            # Skips the auto-scrape / enrichment blocks below deliberately —
-            # the api withheld the post id here, and going and finding it is a
-            # behaviour change this fix does not make.
+            # Skips the auto-scrape / enrichment blocks below deliberately.
+            #
+            # The original reason given here was that "the api withheld the post
+            # id". It does not, and never did: the 409 carries the existing row
+            # in `errors[0].meta` (job_post_id, title, company_name, link). That
+            # was invisible only because the transport flattened the error body
+            # into a string; AUTO-52 restored it, and `_duplicate_post_id` in
+            # lib/trace_dedupe.py reads it today. Enriching the collided-with
+            # post from this branch is therefore now POSSIBLE — it is still not
+            # done here, because it is a behaviour change that wants its own
+            # ticket, not a rider on an error-path fix.
             if _is_duplicate_job_post_conflict(resp):
                 duplicates.append(link.url)
                 logger.info(
