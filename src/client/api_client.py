@@ -16,11 +16,51 @@ from typing import Literal
 from urllib.parse import urljoin
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
+
+
+class APIError(BaseModel):
+    """One error object out of a non-2xx api body, kept as DATA not prose.
+
+    The api answers a failure with a JSON:API error document — a list of error
+    objects under ``errors``. Two fields on it are machine-readable and are the
+    reason this model exists:
+
+    ``code``
+        The stable marker a caller branches on. ``duplicate_job_post`` is the
+        one that matters most (see ``AUTO-52`` / ``CC-125``): it is the api
+        saying *this link is already a JobPost and I declined to merge it*,
+        which is an expected outcome, not a failure.
+
+    ``meta``
+        Per-error payload. On a ``duplicate_job_post`` 409 the api puts the
+        EXISTING post's ``job_post_id`` here, alongside ``title``,
+        ``company_name`` and ``link``. So a duplicate conflict identifies the
+        row it collided with — that information was previously destroyed by
+        the error collapse and is now readable.
+
+    Unknown keys are ignored, and a malformed error object degrades to a
+    ``detail``-only entry rather than raising. Nothing on this path may throw:
+    the whole point is that a caller inspecting an error is not itself a new
+    way to fail.
+    """
+
+    code: str | None = None
+    status: str | None = None
+    title: str | None = None
+    detail: str | None = None
+    source: dict | None = None
+    meta: dict | None = None
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _stringify_status(cls, v):
+        """JSON:API says ``status`` is a string; accept an int without dying."""
+        return str(v) if isinstance(v, int) else v
 
 
 class APIResponse(BaseModel):
@@ -28,6 +68,71 @@ class APIResponse(BaseModel):
     data: dict | None = None
     error: str | None = None
     status_code: int | None = None
+    #: Structured error objects from a non-2xx body; always empty on success.
+    #: Read these, not ``error``, when you need to branch on WHY a call failed.
+    errors: list[APIError] = Field(default_factory=list)
+
+
+def _parse_api_errors(response: httpx.Response) -> list[APIError]:
+    """Recover the api's structured error objects from a non-2xx response.
+
+    Total function — every failure mode returns ``[]``. A response body can be
+    a JSON:API error document, a bare DRF ``{"detail": ...}``, or an HTML proxy
+    page that never reached the api at all; none of those may raise here.
+    ``APIResponse.error`` still carries the raw text either way, so an empty
+    list means "no machine-readable code available", never "no error".
+    """
+    try:
+        body = response.json()
+    except Exception:
+        return []
+    if not isinstance(body, dict):
+        return []
+
+    raw = body.get("errors")
+    if isinstance(raw, list):
+        parsed: list[APIError] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            try:
+                parsed.append(APIError.model_validate(item))
+            except ValidationError:
+                # Keep the evidence rather than dropping the entry.
+                parsed.append(APIError(detail=json.dumps(item)[:500]))
+        return parsed
+
+    # Non-JSON:API shapes the stack can still produce (DRF's default error
+    # body, a Django JsonResponse from middleware that short-circuits before
+    # any view runs). No `code` to recover, but the detail is worth keeping.
+    for key in ("detail", "error", "message"):
+        value = body.get(key)
+        if isinstance(value, str) and value:
+            return [APIError(detail=value)]
+    return []
+
+
+def error_codes(parsed: dict) -> list[str]:
+    """Machine-readable error codes from a parsed ``ApiClient`` envelope.
+
+    ``parsed`` is the ``json.loads()`` of what any client function returned.
+    Returns ``[]`` for a success envelope, an error the api sent without a
+    code, or anything unparseable.
+    """
+    codes: list[str] = []
+    for err in parsed.get("errors") or []:
+        if isinstance(err, dict) and isinstance(err.get("code"), str):
+            codes.append(err["code"])
+    return codes
+
+
+def has_error_code(parsed: dict, code: str) -> bool:
+    """True when the api reported ``code`` among the errors on this response.
+
+    Use this instead of substring-matching ``parsed["error"]``. The prose is
+    truncated at 500 chars and its wording is not a contract; ``code`` is.
+    """
+    return code in error_codes(parsed)
 
 
 class JobPostCreate(BaseModel):
@@ -105,11 +210,16 @@ class ApiClient:
             _inject_frontend_urls(body)
             result = APIResponse(success=True, data=body, status_code=response.status_code)
         else:
+            # `error` stays a human/LLM-readable string, but it is no longer the
+            # ONLY record of the failure — `errors` carries the api's structured
+            # error objects so a caller can branch on `code` instead of parsing
+            # prose. See APIError, and AUTO-52 for why this matters.
             text = response.text[:500] if len(response.text) > 500 else response.text
             result = APIResponse(
                 success=False,
                 error=f"{response.status_code} - {text}",
                 status_code=response.status_code,
+                errors=_parse_api_errors(response),
             )
         return json.dumps(result.model_dump(), indent=2)
 

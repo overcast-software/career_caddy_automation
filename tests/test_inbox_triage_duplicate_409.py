@@ -38,7 +38,10 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
+
 import scripts.inbox_triage as it
+from src.client.api_client import ApiClient
 from src.email_source import EmailMeta
 
 JOB_URL = "https://acme.com/jobs/staff-engineer"
@@ -47,42 +50,53 @@ OWNER_ID = 7
 # Real NanoID-shaped id — a numeric string would mask an int()-cast regression.
 EXISTING_POST_ID = "V30p4hHABQ"
 
-# The api's real duplicate response: job_hunting/api/views/jobs.py:903-920.
-# ApiClient._ok collapses a non-2xx into error="<status> - <raw body>", so the
-# fixture reproduces that collapse rather than a tidied-up dict.
-_DUP_BODY = json.dumps(
-    {
-        "errors": [
-            {
-                "status": "409",
-                "code": "duplicate_job_post",
-                "detail": (
-                    "A job post with this link already exists. Open the existing "
-                    "post or re-submit from a higher-trust source."
-                ),
-                "meta": {"job_post_id": EXISTING_POST_ID, "title": "Staff Engineer"},
-            }
-        ]
-    }
-)
+
+def _envelope(status_code: int, body: dict | str) -> str:
+    """Build the envelope the way production does — through the real ``_ok``.
+
+    These fixtures used to hand-assemble the dict, which meant they encoded one
+    session's belief about the transport. AUTO-52 changed that transport (a
+    non-2xx now carries structured ``errors`` alongside the flattened string),
+    and a hand-written fixture would have gone on passing while asserting
+    against a shape the client no longer produces. Driving the real ``_ok``
+    over a real response means these tests break the day the contract moves.
+    """
+    if isinstance(body, str):
+        response = httpx.Response(status_code, text=body)
+    else:
+        response = httpx.Response(status_code, json=body)
+    return ApiClient("https://example.test", "jh_test")._ok(response)
 
 
 def _dup_409_envelope() -> str:
-    return json.dumps(
-        {"success": False, "error": f"409 - {_DUP_BODY}", "status_code": 409}
+    """The api's real duplicate response — job_hunting/api/views/jobs.py:901-920."""
+    return _envelope(
+        409,
+        {
+            "errors": [
+                {
+                    "status": "409",
+                    "code": "duplicate_job_post",
+                    "detail": (
+                        "A job post with this link already exists. Open the existing "
+                        "post or re-submit from a higher-trust source."
+                    ),
+                    "meta": {"job_post_id": EXISTING_POST_ID, "title": "Staff Engineer"},
+                }
+            ]
+        },
     )
 
 
 def _other_409_envelope() -> str:
     """A 409 that is NOT a duplicate — must still count as a failure."""
-    body = json.dumps(
-        {"errors": [{"status": "409", "code": "scrape_in_flight", "detail": "busy"}]}
+    return _envelope(
+        409, {"errors": [{"status": "409", "code": "scrape_in_flight", "detail": "busy"}]}
     )
-    return json.dumps({"success": False, "error": f"409 - {body}", "status_code": 409})
 
 
 def _server_error_envelope() -> str:
-    return json.dumps({"success": False, "error": "500 - upstream boom", "status_code": 500})
+    return _envelope(500, "upstream boom")
 
 
 @dataclass
@@ -140,6 +154,18 @@ class TestIsDuplicateJobPostConflict:
         # benign — silence is not evidence of a duplicate.
         assert it._is_duplicate_job_post_conflict({"status_code": 409, "error": None}) is False
 
+    def test_codeless_409_does_not_match(self):
+        # A 409 the api sent without a `code` — e.g. an edge or middleware
+        # answering before any view ran. Nothing asserts it is a duplicate, so
+        # it stays a failure and keeps its retry.
+        parsed = json.loads(_envelope(409, {"errors": [{"detail": "conflict"}]}))
+        assert it._is_duplicate_job_post_conflict(parsed) is False
+
+    def test_non_json_409_does_not_match(self):
+        # An HTML conflict page from a proxy yields no structured errors at all.
+        parsed = json.loads(_envelope(409, "<html>Conflict</html>"))
+        assert it._is_duplicate_job_post_conflict(parsed) is False
+
     def test_success_envelope_does_not_match(self):
         assert it._is_duplicate_job_post_conflict({"success": True, "status_code": 200}) is False
 
@@ -187,9 +213,11 @@ class TestCreatePostsDuplicate409:
         assert result["duplicates"] == []
 
     def test_duplicate_409_queues_no_scrape(self, monkeypatch):
-        # The api withheld the post id on this path, so there is nothing to
-        # scrape or enrich. Pinned so a later "helpfully go find the id" change
-        # is a deliberate decision rather than a silent one.
+        # Nothing is scraped or enriched off this path. Note the reason is NOT
+        # that the id is unavailable — since AUTO-52 the 409's
+        # `errors[0].meta.job_post_id` names the row we collided with. Pinned so
+        # that acting on it is a deliberate decision with its own ticket rather
+        # than a silent rider on an error-handling change.
         monkeypatch.setenv("CADDY_AUTO_SCRAPE", "1")
         monkeypatch.delenv("CADDY_FORWARD_AUTO_SCRAPE_KNOWN_GOOD", raising=False)
         api = _api_posting(_dup_409_envelope())

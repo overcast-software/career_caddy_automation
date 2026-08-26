@@ -41,6 +41,7 @@ from src.client.api_client import (
     create_job_post_with_company_check,
     create_scrape,
     get_scrapes,
+    has_error_code,
 )
 
 logging.basicConfig(
@@ -207,10 +208,21 @@ async def process_single_email(email_id: str, api: ApiClient) -> dict:
                 continue
 
             # API returns 201 on a fresh create and 200 when the link/fingerprint
-            # already exists (echoes the canonical record). 409 + data.duplicate
-            # are kept for forward-compat with explicit-conflict responses.
+            # already exists (echoes the canonical record).
+            #
+            # A 409 is a duplicate ONLY when the api says so with
+            # `code=duplicate_job_post` — that is the canonical-collision it
+            # declined to merge, and there is nothing to create or retry. This
+            # used to accept ANY 409, which is the opposite half of the CC-125
+            # mistake: it swallowed a genuine conflict as "duplicate" and tagged
+            # the email processed, losing it silently. Distinguishing the two
+            # requires the structured error code, which the transport only
+            # started preserving in AUTO-52. Matches
+            # `inbox_triage._is_duplicate_job_post_conflict`.
+            status_code = resp.get("status_code")
             is_duplicate = (
-                resp.get("status_code") in (200, 409)
+                status_code == 200
+                or (status_code == 409 and has_error_code(resp, "duplicate_job_post"))
                 or (resp.get("data") or {}).get("duplicate") is True
             )
             if is_duplicate:
