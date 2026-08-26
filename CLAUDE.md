@@ -200,10 +200,21 @@ imports across the repo boundary. To point this toolkit at your own
 Career Caddy instance:
 
 ```
-CC_API_BASE_URL=https://api.your-domain.com   # REST writes
-CC_MCP_URL=https://mcp.your-domain.com/mcp    # MCP reads
+CC_API_BASE_URL=https://your-domain.com       # REST writes
+CC_MCP_URL=https://your-domain.com/mcp        # MCP reads
 CC_API_TOKEN=jh_...                           # API key from /admin/api-keys
 ```
+
+Both point at the **apex, same-origin** — Career Caddy path-routes `/api` and
+`/mcp` off a single host. There are no `api.` / `mcp.` subdomains; the ones
+careercaddy.online used to serve were retired at the GCP cutover (CC-188), so a
+config carrying them fails at DNS resolution before a socket is opened — no
+status code, no server-side log line, nothing to find in the api's traces.
+
+`CC_API_BASE_URL` is **scheme and host only, never a path**. Every request is
+built with `urljoin(base_url, "/api/v1/...")`, and a root-relative path discards
+the base's path segment: `https://your-domain.com/cc` resolves to
+`https://your-domain.com/api/v1/...`, producing 404s that read like routing bugs.
 
 No code changes. Acceptance test: `uv run caddy-inbox --once --limit 1`
 processes one email cleanly against the configured domain.

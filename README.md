@@ -35,10 +35,17 @@ uv run caddy-web                         # web UI with Career Caddy tools
 cc_auto talks to Career Caddy entirely over HTTP — there are no Python imports across the repo boundary. To point this toolkit at your own Career Caddy instance, set the env-var trio in `.env`:
 
 ```
-CC_API_BASE_URL=https://api.your-domain.com    # REST writes
-CC_MCP_URL=https://mcp.your-domain.com/mcp     # MCP reads
+CC_API_BASE_URL=https://your-domain.com        # REST writes
+CC_MCP_URL=https://your-domain.com/mcp         # MCP reads
 CC_API_TOKEN=jh_...                            # API key from /admin/api-keys
 ```
+
+Both are **apex, same-origin** — Career Caddy path-routes `/api` and `/mcp` off
+one host. Scheme and host only: `CC_API_BASE_URL` must carry no path, because
+every request builds its URL with `urljoin(base_url, "/api/v1/...")` and a
+root-relative path discards the base's path segment. `https://your-domain.com/cc`
+silently becomes `https://your-domain.com/api/v1/...` and you get 404s that look
+like routing bugs.
 
 No code changes. Acceptance test:
 
