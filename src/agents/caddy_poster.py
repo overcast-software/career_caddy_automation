@@ -152,7 +152,7 @@ async def add_job_post(
             api_token=token,
             agent_name="career_caddy_agent",
             model_name=get_model_name(model),
-            usage=result.usage(),
+            usage=result.usage,
             trigger="pipeline",
             pipeline_run_id=pipeline_run_id,
         )

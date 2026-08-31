@@ -20,8 +20,10 @@ Pinned here:
 * each of the three call sites reports, with the agent name and the
   ``inbox_triage`` trigger that lets the summary separate this daemon from
   ``tag_emails`` (which reports the SAME ``email_classifier`` agent name)
-* metering is fail-safe in every direction — no token, a broken ``usage()``, or
+* metering is fail-safe in every direction — no token, a broken ``usage``, or
   a raising reporter must all leave triage's own result untouched
+* the stand-in below matches the REAL ``AgentRunResult`` shape, checked against
+  the installed library rather than asserted from memory (2026-08-25)
 
 No pytest-asyncio in the dev group, so coroutines are driven with
 ``asyncio.run`` like the rest of the suite.
@@ -30,6 +32,7 @@ No pytest-asyncio in the dev group, so coroutines are driven with
 from __future__ import annotations
 
 import asyncio
+import inspect
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -42,7 +45,23 @@ EMAIL_ID = "fwd@dougheadley.com"
 
 
 class _Result:
-    """pydantic-ai AgentRunResult stand-in: ``.output`` plus ``.usage()``."""
+    """pydantic-ai AgentRunResult stand-in: ``.output`` plus ``.usage``.
+
+    ``usage`` is a PROPERTY, matching ``AgentRunResult`` in pydantic-ai 2.x.
+
+    It was a method here, and that is the whole reason the 2.0.0 upgrade shipped
+    broken. ``pyproject.toml`` floors pydantic-ai at ``>=0.0.14``; the lock
+    resolved 2.0.0; ``usage`` became a property; and every production call site
+    still said ``result.usage()``. This stub agreed with the old contract, so
+    the suite stayed green while ``caddy-inbox`` raised
+    ``'RunUsage' object is not callable`` on all 20 emails of the 2026-08-23
+    sweep and had to be killed by hand.
+
+    A hand-rolled stand-in for a third-party object is a COPY OF ITS CONTRACT,
+    and a copy drifts in silence. ``test_stub_matches_the_real_agentrunresult``
+    below is the guard: it asserts this shape against the installed library, so
+    the next upgrade that moves ``usage`` fails here instead of in Doug's inbox.
+    """
 
     def __init__(self, output, usage=None, usage_raises: bool = False):
         self.output = output
@@ -51,6 +70,7 @@ class _Result:
         )
         self._usage_raises = usage_raises
 
+    @property
     def usage(self):
         if self._usage_raises:
             raise RuntimeError("usage unavailable")
@@ -73,6 +93,38 @@ def reporter(monkeypatch):
     monkeypatch.setattr(it, "report_usage", spy)
     monkeypatch.setattr(it, "get_model", lambda role: f"openai:model-for-{role}")
     return spy
+
+
+# ---------------------------------------------------------------------------
+# The stub is only worth anything if it still resembles the real thing
+# ---------------------------------------------------------------------------
+
+
+def test_stub_matches_the_real_agentrunresult():
+    """``usage`` must be a property on BOTH the stub and the installed library.
+
+    This is the test that was missing on 2026-08-23. Everything else in this
+    file exercises `_Result`, so all of it passed while production raised
+    ``'RunUsage' object is not callable`` on every email — a stub cannot fail
+    for a reason that lives in someone else's package.
+
+    ``getattr_static`` deliberately, not ``getattr``: reading ``.usage`` off the
+    class normally would return the property OBJECT anyway, but on an instance
+    it would EXECUTE it. Asking the class dict keeps this a question about
+    shape rather than behaviour.
+
+    If a future pydantic-ai turns ``usage`` back into a method, or renames it,
+    this fails with a clear reason — and every ``result.usage`` call site in
+    src/ and scripts/ needs the same edit in reverse.
+    """
+    from pydantic_ai.run import AgentRunResult
+
+    real = inspect.getattr_static(AgentRunResult, "usage")
+    assert isinstance(real, property), (
+        f"pydantic-ai changed AgentRunResult.usage to {type(real).__name__}; "
+        "update every `result.usage` call site in src/ and scripts/, and this stub"
+    )
+    assert isinstance(inspect.getattr_static(_Result, "usage"), property)
 
 
 # ---------------------------------------------------------------------------

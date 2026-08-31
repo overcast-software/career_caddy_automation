@@ -145,7 +145,7 @@ async def classify_email(email_id: str) -> str:
             api_token=api_token,
             agent_name="email_classifier",
             model_name=get_model_name(_classifier_model),
-            usage=result.usage(),
+            usage=result.usage,
             trigger="classify",
         )
 

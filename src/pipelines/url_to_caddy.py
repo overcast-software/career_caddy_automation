@@ -51,7 +51,7 @@ async def scrape_url_and_add_to_caddy(url: str, pipeline_run_id: str | None = No
             api_token=api_token,
             agent_name="browser_scraper",
             model_name=get_model_name(scraper_model),
-            usage=scrape_result.usage(),
+            usage=scrape_result.usage,
             trigger="pipeline",
             pipeline_run_id=run_id,
         )

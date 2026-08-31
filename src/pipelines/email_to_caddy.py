@@ -60,7 +60,7 @@ async def _scrape_url_and_add(url: str, api_token: str, pipeline_run_id: str) ->
             api_token=api_token,
             agent_name="browser_scraper",
             model_name=get_model_name(scraper_model),
-            usage=scrape_result.usage(),
+            usage=scrape_result.usage,
             trigger="pipeline",
             pipeline_run_id=pipeline_run_id,
         )
@@ -120,7 +120,7 @@ async def run_once(url: str | None = None):
             api_token=api_token,
             agent_name="email_job_agent",
             model_name=get_model_name(_pipeline_model),
-            usage=email_result.usage(),
+            usage=email_result.usage,
             trigger="pipeline",
             pipeline_run_id=pipeline_run_id,
         )

@@ -176,7 +176,7 @@ async def _report_agent_usage(role: str, result) -> None:
             api_token=api_token,
             agent_name=role,
             model_name=get_model(role),
-            usage=result.usage(),
+            usage=result.usage,
             trigger=_USAGE_TRIGGER,
         )
     except Exception:
